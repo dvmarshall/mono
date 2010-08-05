@@ -1230,6 +1230,7 @@ mono_lookup_pinvoke_call (MonoMethod *method, const char **exc_class, const char
 	char *full_name, *file_name;
 	int i;
 	MonoDl *module = NULL;
+	gchar* assem_path = NULL;
 
 	g_assert (method->flags & METHOD_ATTRIBUTE_PINVOKE_IMPL);
 
@@ -1259,6 +1260,11 @@ mono_lookup_pinvoke_call (MonoMethod *method, const char **exc_class, const char
 	}
 
 	mono_dllmap_lookup (image, orig_scope, import, &new_scope, &import);
+	
+	if (0 == strcmp (".", new_scope)) {
+		assem_path = g_path_get_dirname (method->klass->image->name);
+		new_scope = orig_scope;
+	}
 
 	mono_trace (G_LOG_LEVEL_INFO, MONO_TRACE_DLLIMPORT,
 			"DllImport attempting to load: '%s'.", new_scope);
@@ -1312,6 +1318,24 @@ mono_lookup_pinvoke_call (MonoMethod *method, const char **exc_class, const char
 #endif
 		}
 
+		if (!module && assem_path) {
+			void *iter = NULL;
+			while ((full_name = mono_dl_build_path (assem_path, file_name, &iter))) {
+				mono_trace (G_LOG_LEVEL_INFO, MONO_TRACE_DLLIMPORT,
+					"DllImport loading library: '%s'.", full_name);
+				module = cached_module_load (full_name, MONO_DL_LAZY, &error_msg);
+				if (!module) {
+					mono_trace (G_LOG_LEVEL_INFO, MONO_TRACE_DLLIMPORT,
+						"DllImport error loading library '%s'.",
+						error_msg);
+					g_free (error_msg);
+				}
+				g_free (full_name);
+				if (module)
+					break;
+			}
+		}
+
 		if (!module) {
 			void *iter = NULL;
 			while ((full_name = mono_dl_build_path (NULL, file_name, &iter))) {
@@ -1348,6 +1372,19 @@ mono_lookup_pinvoke_call (MonoMethod *method, const char **exc_class, const char
 			}
 		}
 
+		if (!module && assem_path) {
+			full_name = g_build_path (G_DIR_SEPARATOR_S, assem_path, file_name, NULL);
+			mono_trace (G_LOG_LEVEL_INFO, MONO_TRACE_DLLIMPORT,
+					"DllImport loading: '%s'.", full_name);
+			module = cached_module_load (full_name, MONO_DL_LAZY, &error_msg);
+			if (!module) {
+				mono_trace (G_LOG_LEVEL_INFO, MONO_TRACE_DLLIMPORT,
+						"DllImport error loading library '%s'.",
+						error_msg);
+			}
+			g_free (full_name);
+		}
+
 		if (!module) {
 			mono_trace (G_LOG_LEVEL_INFO, MONO_TRACE_DLLIMPORT,
 					"DllImport loading: '%s'.", file_name);
@@ -1364,6 +1401,9 @@ mono_lookup_pinvoke_call (MonoMethod *method, const char **exc_class, const char
 		if (module)
 			break;
 	}
+
+	if (assem_path)
+		g_free (assem_path);
 
 	if (!module) {
 		mono_trace (G_LOG_LEVEL_WARNING, MONO_TRACE_DLLIMPORT,
