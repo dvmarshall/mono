@@ -37,6 +37,7 @@
 #include "mono/utils/atomic.h"
 #include "mono/utils/mono-error.h"
 #include "mono/utils/mono-error-internals.h"
+#include "mono/metadata/marshal-hooks.h"
 #include <string.h>
 #include <errno.h>
 
@@ -51,8 +52,8 @@ register_icall (gpointer func, const char *name, const char *sigstr, gboolean sa
 	mono_register_jit_icall (func, name, sig, save);
 }
 
-gpointer
-mono_string_to_bstr(MonoString* ptr)
+static gpointer
+mono_string_to_bstr_default(MonoString* ptr)
 {
 	if (!ptr)
 		return NULL;
@@ -2779,15 +2780,15 @@ mono_ptr_to_bstr(gpointer ptr, int slen)
 		ret = sys_alloc_string_len_ms(str, len);
 		g_free(str);
 		return ret;
-	}
-	else {
-		g_assert_not_reached();
+	} else {
+		g_assert_not_reached ();
+		return 0;
 	}
 #endif
 }
 
-MonoString *
-mono_string_from_bstr (gpointer bstr)
+static MonoString *
+mono_string_from_bstr_default (gpointer bstr)
 {
 	MonoError error;
 	MonoString *result = mono_string_from_bstr_checked (bstr, &error);
@@ -2829,14 +2830,15 @@ mono_string_from_bstr_checked (gpointer bstr, MonoError *error)
 		res = str;
 	} else {
 		g_assert_not_reached ();
+		return 0;
 	}
 
 #endif
 	return res;
 }
 
-void
-mono_free_bstr (gpointer bstr)
+static void
+mono_free_bstr_default (gpointer bstr)
 {
 	if (!bstr)
 		return;
@@ -3389,6 +3391,41 @@ void mono_marshal_safearray_free_indices (gpointer indices)
 	g_free (indices);
 }
 
+static MonoStringToBstrFunc mono_string_to_bstr_pfunc = mono_string_to_bstr_default;
+static MonoStringFromBstrFunc mono_string_from_bstr_pfunc = mono_string_from_bstr_default;
+static MonoFreeBstrFunc mono_free_bstr_pfunc = mono_free_bstr_default;
+
+MONO_API void 
+mono_install_bstr_funcs (MonoStringToBstrFunc new_mono_string_to_bstr_pfunc,
+		   	 MonoStringFromBstrFunc new_mono_string_from_bstr_pfunc,
+			 MonoFreeBstrFunc new_mono_free_bstr_pfunc)
+{
+	if (!(new_mono_string_to_bstr_pfunc && new_mono_string_from_bstr_pfunc && new_mono_free_bstr_pfunc))
+		g_assert_not_reached ();
+	
+	mono_string_to_bstr_pfunc = new_mono_string_to_bstr_pfunc;
+	mono_string_from_bstr_pfunc = new_mono_string_from_bstr_pfunc;
+	mono_free_bstr_pfunc = new_mono_free_bstr_pfunc;
+}
+
+gpointer
+mono_string_to_bstr (MonoString *string_obj)
+{
+	return mono_string_to_bstr_pfunc (string_obj);
+}
+
+MonoString *
+mono_string_from_bstr (gpointer bstr)
+{
+	return mono_string_from_bstr_pfunc (bstr);
+}
+
+void
+mono_free_bstr (gpointer bstr)
+{
+	mono_free_bstr_pfunc (bstr);
+}
+
 #else /* DISABLE_COM */
 
 void
@@ -3515,6 +3552,13 @@ ves_icall_System_Runtime_InteropServices_Marshal_QueryInterfaceInternal (gpointe
 	return 0;
 }
 
+void 
+mono_install_bstr_funcs (MonoStringToBstrFunc new_mono_string_to_bstr_pfunc,
+		   	 MonoStringFromBstrFunc new_mono_string_from_bstr_pfunc,
+			 MonoFreeBstrFunc new_mono_free_bstr_pfunc)
+{
+	g_assert_not_reached ();
+}`
 #endif /* DISABLE_COM */
 
 MonoString *
