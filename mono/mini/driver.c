@@ -1511,7 +1511,7 @@ mono_main (int argc, char* argv[])
 #endif
 #endif
 
-	setlocale (LC_ALL, "");
+	//setlocale (LC_ALL, "");
 
 	if (g_getenv ("MONO_NO_SMP"))
 		mono_set_use_smp (FALSE);
