@@ -117,6 +117,56 @@ create_group_sizes_array (const gint *gs, gint ml)
 	return ret;
 }
 
+//To match .NET behavior, the following occurs:
+//  # = a positive whole number where 0<#<10.
+//  Possible Ending Combinations:
+//  (ends in...)
+//  # - Result should display as #;0;
+//  #; - Result should display as #;0;0;
+//  #;0 - Result should display as #;
+//  if # <=0 or >=10, result should display as 3; (default)
+//  
+static int
+convert_group_sizes_array (gunichar2 *queryBuff, gint *ibuff)
+{
+	gint* inum;
+	gint i, count;
+	inum = ibuff;
+	*inum = 0;
+	if (wcscmp(queryBuff, L"0") == 0 || wcsstr(queryBuff, L"0;") != NULL) {
+		*inum = 3;
+		inum++;
+		*inum = 0;
+	}
+	else {
+		for (i=0; queryBuff[i]; i++) {
+			if (queryBuff[i]==';') {
+				inum++;
+				*inum = 0;
+				continue;
+			}
+			if (*inum) {
+				inum = ibuff;
+				*inum = 3;
+				inum++;
+				*inum = 0;
+				break;
+			}
+
+			*inum = *inum + (queryBuff[i]-'0');
+		}
+		if (*inum != 0 || queryBuff[i-1] == ';') {
+			for (count = 0; count < 2; count++) {
+				inum++;
+				*inum = 0;
+			}
+		}
+	}
+	i=inum-ibuff;
+
+	return i;
+}
+
 static MonoArray*
 create_names_array_idx (const guint16 *names, int ml)
 {
@@ -143,6 +193,289 @@ create_names_array_idx (const guint16 *names, int ml)
 	return ret;
 }
 
+static MonoArray*
+create_names_array_str (const gunichar2 names[][32], int ml)
+{
+	MonoArray *ret;
+	MonoDomain *domain;
+	int i, len = 0;
+
+	if (names == NULL)
+		return NULL;
+
+	domain = mono_domain_get ();
+
+	for (i = 0; i < ml; i++) {
+		if (names [i] == 0)
+			break;
+		len++;
+	}
+
+	ret = mono_array_new_cached (mono_domain_get (), mono_get_string_class (), len);
+
+	for(i = 0; i < len; i++)
+		mono_array_setref (ret, i, mono_string_new_utf16 (domain, names [i], wcslen(names [i])));
+
+	return ret;
+}
+
+#ifdef PLATFORM_WIN32
+void
+ves_icall_System_Globalization_CultureInfo_construct_datetime_format (MonoCultureInfo *this)
+{
+	MonoDomain *domain;
+	const CultureInfoEntry *ci;
+	MonoDateTimeFormatInfo *datetime;
+	const DateTimeFormatEntry *dfe;
+	gunichar2 strArray [13][32];
+	gunichar2 tBuff [64];
+	DWORD dw;
+	gint i;
+
+	MONO_ARCH_SAVE_REGS;
+
+	g_assert (this->datetime_index >= 0);
+
+	datetime = this->datetime_format;
+	dfe = &datetime_format_entries [this->datetime_index];
+
+	domain = mono_domain_get ();
+
+	datetime->readOnly = this->is_read_only;	
+	
+	//Abbreviated Day Names
+	
+	GetLocaleInfoW (this->lcid, LOCALE_SABBREVDAYNAME7, strArray[0], 32);
+	for(i = 0; i < 6; i++) {
+		GetLocaleInfoW (this->lcid, LOCALE_SABBREVDAYNAME1 + i, strArray[i+1], 32);
+	}
+	MONO_OBJECT_SETREF (datetime, AbbreviatedDayNames, create_names_array_str(strArray, 7));
+
+	//Abbreviated Genitive month names - no location to retrieve/set.  Use Default.
+
+	//Abbrev Month names
+	for(i = 0; i < 12; i++) {
+		GetLocaleInfoW (this->lcid, LOCALE_SABBREVMONTHNAME1 + i, strArray[i], 32);
+	}
+	GetLocaleInfoW (this->lcid, LOCALE_SABBREVMONTHNAME13, strArray[12], 32);
+	MONO_OBJECT_SETREF (datetime, AbbreviatedMonthNames, create_names_array_str (strArray, 13));
+
+	//AM designator
+	GetLocaleInfoW (this->lcid, LOCALE_S1159, strArray[0], 32);
+	MONO_OBJECT_SETREF (datetime, AMDesignator, mono_string_new_utf16 (domain, strArray[0], wcslen(strArray[0])));
+
+	//CalendarWeekRule	
+	GetLocaleInfoW (this->lcid, LOCALE_RETURN_NUMBER | LOCALE_IFIRSTWEEKOFYEAR, (LPWSTR)&dw, 4);
+	datetime->CalendarWeekRule = dw;
+
+	//Date Sep
+	GetLocaleInfoW (this->lcid,  LOCALE_SDATE, strArray[0], 32);
+	MONO_OBJECT_SETREF (datetime, DateSeparator, mono_string_new_utf16 (domain, strArray[0], wcslen(strArray[0])));
+
+	//Day Names
+	GetLocaleInfoW (this->lcid, LOCALE_SDAYNAME7, strArray[0], 32);
+	for(i = 0; i < 6; i++) {
+		GetLocaleInfoW (this->lcid, LOCALE_SDAYNAME1 + i, strArray[i+1], 32);
+	}
+	MONO_OBJECT_SETREF (datetime, DayNames, create_names_array_str (strArray, 7));
+
+	//First Day Of The Week - .NET has its zero-index as Monday, while mono sees it as Sunday.
+	//Must shift the First Day Of The Week value accordingly.  Also, .NET defaults to 0 if
+	//the value is > 7 or < 0, which is their Monday (our Sunday).  Default adjusted to Monday.
+	GetLocaleInfoW (this->lcid, LOCALE_RETURN_NUMBER | LOCALE_IFIRSTDAYOFWEEK, (LPWSTR)&dw, 4);
+	if(dw == 6) {
+		dw = 0;
+	}
+	else if(dw < 7 && dw >= 0) {
+		dw++;
+	}
+	else {
+		dw = 1;
+	}
+	datetime->FirstDayOfWeek = dw;
+
+	//Full Date Time Pattern - concat Long Date <space> Long Time
+	GetLocaleInfoW (this->lcid, LOCALE_SLONGDATE, strArray[0], 32);
+	GetLocaleInfoW (this->lcid, LOCALE_STIMEFORMAT, strArray[1], 32);
+	tBuff [0] = 0;
+	wcscpy (tBuff, strArray[0]);
+	wcscat (tBuff, L" ");
+	wcscat (tBuff, strArray [1]);
+	MONO_OBJECT_SETREF (datetime, FullDateTimePattern, mono_string_new_utf16 (domain, tBuff, wcslen(tBuff)));
+
+	//Long Date Pattern
+	GetLocaleInfoW (this->lcid, LOCALE_SLONGDATE, strArray[0], 32);
+	MONO_OBJECT_SETREF (datetime, LongDatePattern, mono_string_new_utf16 (domain, strArray[0], wcslen(strArray[0])));
+
+	//Long Time Pattern
+	GetLocaleInfoW (this->lcid, LOCALE_STIMEFORMAT, strArray[0], 32);
+	MONO_OBJECT_SETREF (datetime, LongTimePattern, mono_string_new_utf16 (domain, strArray[0], wcslen(strArray[0])));
+
+	//Month-Day Pattern - LOCALE_SMONTHDAY requires Windows 7 or later!
+	//Note:  Mono's month_day pattern does not line up with .NET.
+	//       The culture-info-tables.h file is not correct.  the Month-Day
+	//       should be MMMM dd, but is currently MMMM d.
+	MONO_OBJECT_SETREF (datetime, MonthDayPattern, mono_string_new (domain, idx2string (dfe->month_day_pattern)));
+
+	//Month Names
+	for(i = 0; i < 12; i++)	{
+		GetLocaleInfoW (this->lcid, LOCALE_SMONTHNAME1 + i, strArray[i], 32);
+	}
+	GetLocaleInfoW (this->lcid, LOCALE_SMONTHNAME13, strArray[12], 32);
+	MONO_OBJECT_SETREF (datetime, MonthNames, create_names_array_str (strArray, 13));
+
+	//Month Genitive names - no location to retrieve/set.  Use default.
+
+	//PM Designator
+	GetLocaleInfoW (this->lcid, LOCALE_S2359, strArray[0], 32);
+	MONO_OBJECT_SETREF (datetime, PMDesignator, mono_string_new_utf16 (domain, strArray[0], wcslen(strArray[0])));
+
+	//RFC1123Pattern - no location to retrieve.  Use default.
+	
+	//Short Date Pattern
+	GetLocaleInfoW (this->lcid, LOCALE_SSHORTDATE, strArray[0], 32);
+	MONO_OBJECT_SETREF (datetime, ShortDatePattern, mono_string_new_utf16 (domain, strArray[0], wcslen(strArray[0])));
+
+	//ShortestDayNames - no location to retrieve/set.  Use default.
+
+	//Short Time Pattern - LOCALE_SSHORTTIME requires Windows 7 or later!
+	MONO_OBJECT_SETREF (datetime, ShortTimePattern, mono_string_new (domain, idx2string (dfe->short_time_pattern)));
+
+	//SortableDateTimePattern - no location to retrieve/set.  Use default.
+	
+	//Time Separator
+	GetLocaleInfoW (this->lcid, LOCALE_STIME, strArray[0], 32);
+	MONO_OBJECT_SETREF (datetime, TimeSeparator, mono_string_new_utf16 (domain, strArray[0], wcslen(strArray[0])));
+
+	//UniversalSortableDateTimePattern - no location to retrieve/set.  Use default.
+
+	//Year-Month Pattern
+	//NOTE:  The value provided by LOCALE_SYEARMONTH does not match
+	//       the output for .NET
+	GetLocaleInfoW (this->lcid, LOCALE_SYEARMONTH, strArray[0], 32);
+	MONO_OBJECT_SETREF (datetime, YearMonthPattern, mono_string_new_utf16 (domain, strArray[0], wcslen(strArray[0])));
+}
+
+void
+ves_icall_System_Globalization_CultureInfo_construct_number_format (MonoCultureInfo *this)
+{
+	MonoDomain *domain;
+	MonoNumberFormatInfo *number;
+	const NumberFormatEntry *nfe;
+	gunichar2 queryBuff [32];
+	DWORD dw;
+	gint ibuff [32];
+	gint i;	
+
+	MONO_ARCH_SAVE_REGS;
+
+	g_assert (this->number_format != 0);
+
+	number = this->number_format;
+	nfe = &number_format_entries [this->number_index];
+
+	domain = mono_domain_get ();
+
+	number->readOnly = this->is_read_only;
+
+	GetLocaleInfoW (this->lcid, LOCALE_RETURN_NUMBER | LOCALE_ICURRDIGITS, (LPWSTR)&dw, 4);
+	number->currencyDecimalDigits = dw;
+	
+	GetLocaleInfoW (this->lcid, LOCALE_SMONDECIMALSEP, queryBuff, 32);
+	MONO_OBJECT_SETREF (number, currencyDecimalSeparator, mono_string_new_utf16 (domain, queryBuff, wcslen(queryBuff)));
+
+	GetLocaleInfoW (this->lcid, LOCALE_SMONTHOUSANDSEP, queryBuff, 32);
+	MONO_OBJECT_SETREF (number, currencyGroupSeparator, mono_string_new_utf16 (domain, queryBuff, wcslen(queryBuff)));
+
+	GetLocaleInfoW (this->lcid, LOCALE_SMONGROUPING, queryBuff, 32);
+	i = convert_group_sizes_array (queryBuff, ibuff);
+	MONO_OBJECT_SETREF (number, currencyGroupSizes, create_group_sizes_array (ibuff, i));
+
+	GetLocaleInfoW (this->lcid, LOCALE_RETURN_NUMBER | LOCALE_INEGCURR, (LPWSTR)&dw, 4);
+	number->currencyNegativePattern = dw;
+	
+	GetLocaleInfoW (this->lcid, LOCALE_RETURN_NUMBER | LOCALE_ICURRENCY, (LPWSTR)&dw, 4);
+	number->currencyPositivePattern = dw;
+
+	GetLocaleInfoW (this->lcid, LOCALE_SCURRENCY, queryBuff, 32);
+	MONO_OBJECT_SETREF (number, currencySymbol, mono_string_new_utf16 (domain, queryBuff, wcslen(queryBuff)));
+
+	// LOCALE_SNAN requires Vista or later.
+	MONO_OBJECT_SETREF (number, naNSymbol, mono_string_new (domain, idx2string (nfe->nan_symbol)));
+
+	//LOCALE_SNEGINFINITIY requires Vista or later.
+	MONO_OBJECT_SETREF (number, negativeInfinitySymbol, mono_string_new (domain, idx2string (nfe->negative_infinity_symbol)));
+	
+	//negative sign
+	GetLocaleInfoW (this->lcid, LOCALE_SNEGATIVESIGN, queryBuff, 32);
+	MONO_OBJECT_SETREF (number, negativeSign, mono_string_new_utf16 (domain, queryBuff, wcslen(queryBuff)));
+
+	//num dec digits
+	GetLocaleInfoW (this->lcid, LOCALE_RETURN_NUMBER | LOCALE_IDIGITS, (LPWSTR)&dw, 4);
+	number->numberDecimalDigits = dw;
+
+	//num dec sep
+	GetLocaleInfoW (this->lcid, LOCALE_SDECIMAL, queryBuff, 32);
+	MONO_OBJECT_SETREF (number, numberDecimalSeparator, mono_string_new_utf16 (domain, queryBuff, wcslen(queryBuff)));
+
+	//dec group sep
+	GetLocaleInfoW (this->lcid, LOCALE_STHOUSAND, queryBuff, 32);
+	MONO_OBJECT_SETREF (number, numberGroupSeparator, mono_string_new_utf16 (domain, queryBuff, wcslen(queryBuff)));
+
+	//dec goup sizes
+	GetLocaleInfoW (this->lcid, LOCALE_SGROUPING, queryBuff, 32);
+	i = convert_group_sizes_array (queryBuff, ibuff);
+	MONO_OBJECT_SETREF (number, numberGroupSizes, create_group_sizes_array (ibuff, i));
+
+	//dec negative format
+	GetLocaleInfoW (this->lcid, LOCALE_RETURN_NUMBER | LOCALE_INEGNUMBER, (LPWSTR)&dw, 4);
+	number->numberNegativePattern = dw;
+	
+	//dec positive format - does not exist...cannot set
+
+	//percent decimal digits - .NET actually copies the Number decimal digits value here
+	GetLocaleInfoW (this->lcid, LOCALE_RETURN_NUMBER | LOCALE_IDIGITS, (LPWSTR)&dw, 4);
+	number->percentDecimalDigits = dw;
+
+	//percent dec sep - .NET actually copies the Number decimal sep value here
+	GetLocaleInfoW (this->lcid, LOCALE_SDECIMAL, queryBuff, 32);
+	MONO_OBJECT_SETREF (number, percentDecimalSeparator, mono_string_new_utf16 (domain, queryBuff, wcslen(queryBuff)));
+
+	//Percent Group sep - .NET actually copies the Number group sep value here
+	GetLocaleInfoW (this->lcid, LOCALE_STHOUSAND, queryBuff, 32);
+	MONO_OBJECT_SETREF (number, percentGroupSeparator, mono_string_new_utf16 (domain, queryBuff, wcslen(queryBuff)));
+
+	//Percent Group size - .NET actually copies the Number group size value her
+	GetLocaleInfoW (this->lcid, LOCALE_SGROUPING, queryBuff, 32);
+	i = convert_group_sizes_array (queryBuff, ibuff);
+	MONO_OBJECT_SETREF (number, percentGroupSizes, create_group_sizes_array (ibuff, i));
+
+	//Percent Negative Pattern - LOCALE_INEGATIVEPERCENT requires Windows 7 or later
+	number->percentNegativePattern = nfe->percent_negative_pattern;
+
+	//Percent Positive Pattern - LOCALE_IPOSITIVEPERCENT requires Windows 7 or later
+	number->percentPositivePattern = nfe->percent_positive_pattern;
+
+	//Percent symbol - LOCALE_SPERCENT requires Windows 7 or later
+	MONO_OBJECT_SETREF (number, percentSymbol, mono_string_new (domain, idx2string (nfe->percent_symbol)));
+
+	//Permille symbol - LOCALE_SPERMILLE requires Windows 7 or later
+	MONO_OBJECT_SETREF (number, perMilleSymbol, mono_string_new (domain, idx2string (nfe->per_mille_symbol)));
+
+	//Positive Infinity Symbol - LOCALE_SPOSFINITIY requires Vista or later.
+	MONO_OBJECT_SETREF (number, positiveInfinitySymbol, mono_string_new (domain, idx2string (nfe->positive_infinity_symbol)));
+
+	//Positive Sign
+	//If empty string is returned, use default.
+	GetLocaleInfoW (this->lcid, LOCALE_SPOSITIVESIGN, queryBuff, 32);
+	if (wcscmp (queryBuff, L"") == 0)
+		MONO_OBJECT_SETREF (number, positiveSign, mono_string_new (domain, idx2string (nfe->positive_sign)));
+	else
+		MONO_OBJECT_SETREF (number, positiveSign, mono_string_new_utf16 (domain, queryBuff, wcslen(queryBuff)));
+	
+}
+
+#else
 void
 ves_icall_System_Globalization_CultureInfo_construct_datetime_format (MonoCultureInfo *this)
 {
@@ -245,6 +578,7 @@ ves_icall_System_Globalization_CultureInfo_construct_number_format (MonoCultureI
 			idx2string (nfe->positive_infinity_symbol)));
 	MONO_OBJECT_SETREF (number, positiveSign, mono_string_new (domain, idx2string (nfe->positive_sign)));
 }
+#endif
 
 static MonoBoolean
 construct_culture (MonoCultureInfo *this, const CultureInfoEntry *ci)
@@ -422,13 +756,15 @@ get_darwin_locale (void)
 static gchar*
 get_current_locale_name (void)
 {
+	const CultureInfoEntry *ci;
 	gchar *locale;
 	gchar *corrected = NULL;
 	const gchar *p;
 	gchar *c;
 
 #ifdef HOST_WIN32
-	locale = g_win32_getlocale ();
+	ci = culture_info_entry_from_lcid (GetThreadLocale ());
+	locale = g_strdup (locale_strings + ci->name);
 #elif defined (__APPLE__)	
 	locale = get_darwin_locale ();
 	if (!locale)
