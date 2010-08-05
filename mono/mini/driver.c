@@ -1288,7 +1288,7 @@ mono_main (int argc, char* argv[])
 	int test_jit_info_table = FALSE;
 #endif
 
-	setlocale (LC_ALL, "");
+	//setlocale (LC_ALL, "");
 
 #if HAVE_SCHED_SETAFFINITY
 	if (getenv ("MONO_NO_SMP")) {
