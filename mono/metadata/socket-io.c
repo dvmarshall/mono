@@ -861,16 +861,47 @@ gpointer ves_icall_System_Net_Sockets_Socket_Accept_internal(SOCKET sock,
 	MONO_ARCH_SAVE_REGS;
 
 	*error = 0;
+
 #ifdef HOST_WIN32
-	{
-		MonoInternalThread* curthread = mono_thread_internal_current ();
-		curthread->interrupt_on_stop = (gpointer)TRUE;
-		newsock = _wapi_accept (sock, NULL, 0);
-		curthread->interrupt_on_stop = (gpointer)FALSE;
+	/* Several applications are getting stuck during shutdown on Windows
+	* when an accept call is on a background thread.
+	*
+	*/
+	if (blocking) {
+		MonoThread* curthread = mono_thread_current ();
+
+		if (curthread) {
+			for (;;) {
+				int selectret;
+				int optlen = sizeof (gint);
+				TIMEVAL timeout;
+				fd_set readfds;
+				FD_ZERO (&readfds);
+				FD_SET(sock, &readfds);
+				timeout.tv_sec = 0;
+				timeout.tv_usec = 1000;
+				selectret = select (0, &readfds, NULL, NULL, &timeout);
+				if (selectret > 0)
+					break;
+				if (curthread->state & ThreadState_StopRequested)
+					return NULL;
+				/* A negative return from select means that an error has occurred.
+				* Let _wapi_accept handle that.*/
+				if (selectret != 0)
+					break;
+				/* The socket's state may have changed.  If it is no longer listening, stop.*/
+				if (!getsockopt (sock, SOL_SOCKET, SO_ACCEPTCONN, (char*)&selectret, &optlen)) {
+					if (!selectret)
+						break;
+				}
+			}
+		}
 	}
-#else
-	newsock = _wapi_accept (sock, NULL, 0);
 #endif
+
+
+	newsock = _wapi_accept (sock, NULL, 0);
+
 	if(newsock==INVALID_SOCKET) {
 		*error = WSAGetLastError ();
 		return(NULL);
