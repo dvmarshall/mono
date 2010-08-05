@@ -1,31 +1,4 @@
-SOURCES = \
-	test.c 		\
-	test.h 		\
-	tests.h 	\
-	driver.c 	\
-	hashtable.c 	\
-	string-util.c 	\
-	string.c 	\
-	slist.c 	\
-	sizes.c		\
-	ptrarray.c 	\
-	list.c		\
-	array.c		\
-	fake.c		\
-	path.c		\
-	queue.c		\
-	shell.c		\
-	spawn.c		\
-	timer.c		\
-	file.c		\
-	pattern.c	\
-	dir.c		\
-	markup.c	\
-	unicode.c	\
-	utf8.c		\
-	endian.c	\
-	module.c	\
-	memory.c
+SOURCES = test.c test.h tests.h driver.c hashtable.c string-util.c string.c slist.c sizes.c ptrarray.c list.c array.c fake.c path.c queue.c shell.c spawn.c timer.c file.c pattern.c dir.c markup.c unicode.c utf8.c endian.c module.c memory.c
 
 test_eglib_SOURCES = $(SOURCES)
 
