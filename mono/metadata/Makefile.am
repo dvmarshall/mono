@@ -217,6 +217,7 @@ libmonoruntimeinclude_HEADERS = \
 	exception.h		\
 	image.h			\
 	loader.h		\
+	marshal-hooks.h		\
 	metadata.h		\
 	mono-config.h		\
 	mono-debug.h		\
