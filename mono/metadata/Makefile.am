@@ -183,6 +183,7 @@ libmonoruntimeinclude_HEADERS = \
 	exception.h		\
 	image.h			\
 	loader.h		\
+	marshal-hooks.h		\
 	mempool.h		\
 	metadata.h		\
 	mono-config.h		\
