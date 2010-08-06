@@ -1,0 +1,24 @@
+# edit the bin text files to remove hardcoded directories
+find $INSTALLDIR/bin -type f | grep -v "\.tcl" | xargs file | grep -v ELF | awk 'BEGIN { FS=":"};{ print $1 }' | xargs sed -i -e "s:$PWD:\`dirname \$0\`/..:g"
+
+# edit the pkgconfig files to removed hardcoded directories
+find $INSTALLDIR/lib/pkgconfig -name "*.pc" | xargs sed -i -e "s:$PWD:\${pcfiledir}/../..:g"
+
+# edit monodoc.dll.config
+find $INSTALLDIR -name monodoc.dll.config | xargs sed -i -e "s:$PWD/lib/monodoc:../../../../monodoc:g"
+
+# edit mono.pc - strip out the Requires tag so glib develop is not required to run mono
+grep -v "Requires: " $INSTALLDIR/lib/pkgconfig/mono.pc > /tmp/mono.pc
+rm $INSTALLDIR/lib/pkgconfig/mono.pc
+mv /tmp/mono.pc $INSTALLDIR/lib/pkgconfig/mono.pc
+
+rm $INSTALLDIR/lib/mono/2.0/nunit* $INSTALLDIR/lib/mono/3.5/nunit*  $INSTALLDIR/lib/mono/4.0/nunit* $INSTALLDIR/lib/mono/compat-2.0/ $INSTALLDIR/lib/mono/compat-4.0/ $INSTALLDIR/lib/mono/gac/nunit* -rf
+
+cp $ALBION_THIRDPARTY/mono_install_$PLAT/bin/nant $INSTALLDIR/bin/
+
+rm -rf $INSTALLDIR/man
+
+
+
+exit 0;
+
