@@ -211,6 +211,7 @@
 #include "utils/mono-time.h"
 #include "utils/mono-semaphore.h"
 #include "utils/mono-counters.h"
+#include "utils/mono-proclib.h"
 
 #include <mono/utils/memcheck.h>
 
@@ -507,6 +508,10 @@ static mword lowest_heap_address = ~(mword)0;
 static mword highest_heap_address = 0;
 
 static LOCK_DECLARE (interruption_mutex);
+static LOCK_DECLARE (global_remset_mutex);
+
+#define LOCK_GLOBAL_REMSET pthread_mutex_lock (&global_remset_mutex)
+#define UNLOCK_GLOBAL_REMSET pthread_mutex_unlock (&global_remset_mutex)
 
 typedef struct _FinalizeEntry FinalizeEntry;
 struct _FinalizeEntry {
@@ -772,6 +777,7 @@ SgenMajorCollector major;
 #include "sgen-pinning.c"
 #include "sgen-pinning-stats.c"
 #include "sgen-gray.c"
+#include "sgen-workers.c"
 #include "sgen-los.c"
 
 /* Root bitmap descriptors are simpler: the lower three bits describe the type
@@ -1518,16 +1524,23 @@ global_remset_location_was_not_added (gpointer ptr)
  *
  *   The global remset contains locations which point into newspace after
  * a minor collection. This can happen if the objects they point to are pinned.
+ *
+ * LOCKING: If called from a parallel collector, the global remset
+ * lock must be held.  For serial collectors that is not necessary.
  */
 void
 mono_sgen_add_to_global_remset (gpointer ptr)
 {
 	RememberedSet *rs;
+	gboolean lock = current_collection_generation == GENERATION_OLD && major.is_parallel;
 
 	g_assert (!ptr_in_nursery (ptr) && ptr_in_nursery (*(gpointer*)ptr));
 
+	if (lock)
+		LOCK_GLOBAL_REMSET;
+
 	if (!global_remset_location_was_not_added (ptr))
-		return;
+		goto done;
 
 	DEBUG (8, fprintf (gc_debug_file, "Adding global remset for %p\n", ptr));
 	binary_protocol_global_remset (ptr, *(gpointer*)ptr, (gpointer)LOAD_VTABLE (*(gpointer*)ptr));
@@ -1540,7 +1553,7 @@ mono_sgen_add_to_global_remset (gpointer ptr)
 	 */
 	if (global_remset->store_next + 3 < global_remset->end_set) {
 		*(global_remset->store_next++) = (mword)ptr;
-		return;
+		goto done;
 	}
 	rs = alloc_remset (global_remset->end_set - global_remset->data, NULL);
 	rs->next = global_remset;
@@ -1555,6 +1568,10 @@ mono_sgen_add_to_global_remset (gpointer ptr)
 		}
 		DEBUG (4, fprintf (gc_debug_file, "Global remset now has size %d\n", global_rs_size));
 	}
+
+ done:
+	if (lock)
+		UNLOCK_GLOBAL_REMSET;
 }
 
 /*
@@ -1564,7 +1581,7 @@ mono_sgen_add_to_global_remset (gpointer ptr)
  * frequently after each object is copied, to achieve better locality and cache
  * usage.
  */
-static void inline
+static void
 drain_gray_stack (GrayQueue *queue)
 {
 	char *obj;
@@ -1578,6 +1595,9 @@ drain_gray_stack (GrayQueue *queue)
 			major.minor_scan_object (obj, queue);
 		}
 	} else {
+		if (major.is_parallel && queue == &workers_distribute_gray_queue)
+			return;
+
 		for (;;) {
 			GRAY_OBJECT_DEQUEUE (queue, obj);
 			if (!obj)
@@ -2019,9 +2039,9 @@ alloc_nursery (void)
 	g_assert (nursery_size == DEFAULT_NURSERY_SIZE);
 	alloc_size = nursery_size;
 #ifdef SGEN_ALIGN_NURSERY
-	data = mono_sgen_alloc_os_memory_aligned (alloc_size, alloc_size, TRUE);
+	data = major.alloc_heap (alloc_size, alloc_size, DEFAULT_NURSERY_BITS);
 #else
-	data = mono_sgen_alloc_os_memory (alloc_size, TRUE);
+	data = major.alloc_heap (alloc_size, 0, DEFAULT_NURSERY_BITS);
 #endif
 	nursery_start = data;
 	nursery_real_end = nursery_start + nursery_size;
@@ -2423,9 +2443,8 @@ mono_sgen_register_moved_object (void *obj, void *destination)
 	g_assert (mono_profiler_events & MONO_PROFILE_GC_MOVES);
 
 	/* FIXME: handle this for parallel collector */
-#ifdef SGEN_PARALLEL_MARK
-	g_assert_not_reached ();
-#endif
+	g_assert (!major.is_parallel);
+
 	if (moved_objects_idx == MOVED_OBJECTS_NUM) {
 		mono_profiler_gc_moves (moved_objects, moved_objects_idx);
 		moved_objects_idx = 0;
@@ -2562,7 +2581,7 @@ collect_nursery (size_t requested_size)
 
 	major.start_nursery_collection ();
 
-	gray_object_queue_init (&gray_queue);
+	gray_object_queue_init (&gray_queue, mono_sgen_get_unmanaged_allocator ());
 
 	num_minor_gcs++;
 	mono_stats.minor_gc_count ++;
@@ -2684,7 +2703,9 @@ major_do_collection (const char *reason)
 
 	binary_protocol_collection (GENERATION_OLD);
 	check_scan_starts ();
-	gray_object_queue_init (&gray_queue);
+	gray_object_queue_init (&gray_queue, mono_sgen_get_unmanaged_allocator ());
+	if (major.is_parallel)
+		gray_object_queue_init (&workers_distribute_gray_queue, mono_sgen_get_unmanaged_allocator ());
 
 	degraded_mode = 0;
 	DEBUG (1, fprintf (gc_debug_file, "Start major collection %d\n", num_major_gcs));
@@ -2733,7 +2754,7 @@ major_do_collection (const char *reason)
 	DEBUG (6, fprintf (gc_debug_file, "Pinning from sections\n"));
 	/* first pass for the sections */
 	mono_sgen_find_section_pin_queue_start_end (nursery_section);
-	major.find_pin_queue_start_ends (&gray_queue);
+	major.find_pin_queue_start_ends (WORKERS_DISTRIBUTE_GRAY_QUEUE);
 	/* identify possible pointers to the insize of large objects */
 	DEBUG (6, fprintf (gc_debug_file, "Pinning from large objects\n"));
 	for (bigobj = los_object_list; bigobj; bigobj = bigobj->next) {
@@ -2741,15 +2762,15 @@ major_do_collection (const char *reason)
 		if (mono_sgen_find_optimized_pin_queue_area (bigobj->data, (char*)bigobj->data + bigobj->size, &dummy)) {
 			pin_object (bigobj->data);
 			/* FIXME: only enqueue if object has references */
-			GRAY_OBJECT_ENQUEUE (&gray_queue, bigobj->data);
+			GRAY_OBJECT_ENQUEUE (WORKERS_DISTRIBUTE_GRAY_QUEUE, bigobj->data);
 			if (heap_dump_file)
 				mono_sgen_pin_stats_register_object ((char*) bigobj->data, safe_object_get_size ((MonoObject*) bigobj->data));
 			DEBUG (6, fprintf (gc_debug_file, "Marked large object %p (%s) size: %lu from roots\n", bigobj->data, safe_name (bigobj->data), (unsigned long)bigobj->size));
 		}
 	}
 	/* second pass for the sections */
-	mono_sgen_pin_objects_in_section (nursery_section, &gray_queue);
-	major.pin_objects (&gray_queue);
+	mono_sgen_pin_objects_in_section (nursery_section, WORKERS_DISTRIBUTE_GRAY_QUEUE);
+	major.pin_objects (WORKERS_DISTRIBUTE_GRAY_QUEUE);
 
 	TV_GETTIME (btv);
 	time_major_pinning += TV_ELAPSED_MS (atv, btv);
@@ -2758,14 +2779,14 @@ major_do_collection (const char *reason)
 
 	major.init_to_space ();
 
-	drain_gray_stack (&gray_queue);
+	workers_start_all_workers (1);
 
 	TV_GETTIME (atv);
 	time_major_scan_pinned += TV_ELAPSED_MS (btv, atv);
 
 	/* registered roots, this includes static fields */
-	scan_from_registered_roots (major.copy_or_mark_object, heap_start, heap_end, ROOT_TYPE_NORMAL, &gray_queue);
-	scan_from_registered_roots (major.copy_or_mark_object, heap_start, heap_end, ROOT_TYPE_WBARRIER, &gray_queue);
+	scan_from_registered_roots (major.copy_or_mark_object, heap_start, heap_end, ROOT_TYPE_NORMAL, WORKERS_DISTRIBUTE_GRAY_QUEUE);
+	scan_from_registered_roots (major.copy_or_mark_object, heap_start, heap_end, ROOT_TYPE_WBARRIER, WORKERS_DISTRIBUTE_GRAY_QUEUE);
 	TV_GETTIME (btv);
 	time_major_scan_registered_roots += TV_ELAPSED_MS (atv, btv);
 
@@ -2780,14 +2801,25 @@ major_do_collection (const char *reason)
 	time_major_scan_alloc_pinned += TV_ELAPSED_MS (atv, btv);
 
 	/* scan the list of objects ready for finalization */
-	scan_finalizer_entries (major.copy_or_mark_object, fin_ready_list, &gray_queue);
-	scan_finalizer_entries (major.copy_or_mark_object, critical_fin_list, &gray_queue);
+	scan_finalizer_entries (major.copy_or_mark_object, fin_ready_list, WORKERS_DISTRIBUTE_GRAY_QUEUE);
+	scan_finalizer_entries (major.copy_or_mark_object, critical_fin_list, WORKERS_DISTRIBUTE_GRAY_QUEUE);
 	TV_GETTIME (atv);
 	time_major_scan_finalized += TV_ELAPSED_MS (btv, atv);
 	DEBUG (2, fprintf (gc_debug_file, "Root scan: %d usecs\n", TV_ELAPSED (btv, atv)));
 
 	TV_GETTIME (btv);
 	time_major_scan_big_objects += TV_ELAPSED_MS (atv, btv);
+
+	if (major.is_parallel) {
+		/* FIXME: don't do busy waiting here! */
+		while (!gray_object_queue_is_empty (WORKERS_DISTRIBUTE_GRAY_QUEUE))
+			workers_distribute_gray_queue_sections ();
+	}
+	workers_change_num_working (-1);
+	workers_join ();
+
+	if (major.is_parallel)
+		g_assert (gray_object_queue_is_empty (&gray_queue));
 
 	/* all the objects in the heap */
 	finish_gray_stack (heap_start, heap_end, GENERATION_OLD, &gray_queue);
@@ -4669,6 +4701,7 @@ mono_gc_conservatively_scan_area (void *start, void *end)
 void*
 mono_gc_scan_object (void *obj)
 {
+	g_assert_not_reached ();
 	if (current_collection_generation == GENERATION_NURSERY)
 		major.copy_object (&obj, &gray_queue);
 	else
@@ -6162,12 +6195,10 @@ mono_gc_is_gc_thread (void)
 	return result;
 }
 
-#ifdef USER_CONFIG
-
 /* Tries to extract a number from the passed string, taking in to account m, k
  * and g suffixes */
-static gboolean
-parse_environment_string_extract_number (gchar *str, glong *out)
+gboolean
+mono_sgen_parse_environment_string_extract_number (const char *str, glong *out)
 {
 	char *endptr;
 	int len = strlen (str), shift = 0;
@@ -6207,8 +6238,6 @@ parse_environment_string_extract_number (gchar *str, glong *out)
 	return TRUE;
 }
 
-#endif 
-
 void
 mono_gc_base_init (void)
 {
@@ -6226,15 +6255,62 @@ mono_gc_base_init (void)
 	pagesize = mono_pagesize ();
 	gc_debug_file = stderr;
 
+	LOCK_INIT (interruption_mutex);
+	LOCK_INIT (global_remset_mutex);
+
 	if ((env = getenv ("MONO_GC_PARAMS"))) {
 		opts = g_strsplit (env, ",", -1);
 		for (ptr = opts; *ptr; ++ptr) {
 			char *opt = *ptr;
+			if (g_str_has_prefix (opt, "major=")) {
+				opt = strchr (opt, '=') + 1;
+				major_collector = g_strdup (opt);
+			}
+		}
+	} else {
+		opts = NULL;
+	}
+
+	init_stats ();
+	mono_sgen_init_internal_allocator ();
+
+	mono_sgen_register_fixed_internal_mem_type (INTERNAL_MEM_FRAGMENT, sizeof (Fragment));
+	mono_sgen_register_fixed_internal_mem_type (INTERNAL_MEM_SECTION, SGEN_SIZEOF_GC_MEM_SECTION);
+	mono_sgen_register_fixed_internal_mem_type (INTERNAL_MEM_FINALIZE_ENTRY, sizeof (FinalizeEntry));
+	mono_sgen_register_fixed_internal_mem_type (INTERNAL_MEM_DISLINK, sizeof (DisappearingLink));
+	mono_sgen_register_fixed_internal_mem_type (INTERNAL_MEM_ROOT_RECORD, sizeof (RootRecord));
+	mono_sgen_register_fixed_internal_mem_type (INTERNAL_MEM_GRAY_QUEUE, sizeof (GrayQueueSection));
+	g_assert (sizeof (GenericStoreRememberedSet) == sizeof (gpointer) * STORE_REMSET_BUFFER_SIZE);
+	mono_sgen_register_fixed_internal_mem_type (INTERNAL_MEM_STORE_REMSET, sizeof (GenericStoreRememberedSet));
+	mono_sgen_register_fixed_internal_mem_type (INTERNAL_MEM_EPHEMERON_LINK, sizeof (EphemeronLinkNode));
+
+	if (!major_collector || !strcmp (major_collector, "marksweep")) {
+		mono_sgen_marksweep_init (&major);
+	} else if (!major_collector || !strcmp (major_collector, "marksweep-fixed")) {
+		mono_sgen_marksweep_fixed_init (&major);
+	} else if (!major_collector || !strcmp (major_collector, "marksweep-par")) {
+		mono_sgen_marksweep_par_init (&major);
+		workers_init (mono_cpu_count ());
+	} else if (!major_collector || !strcmp (major_collector, "marksweep-fixed-par")) {
+		mono_sgen_marksweep_fixed_par_init (&major);
+		workers_init (mono_cpu_count ());
+	} else if (!strcmp (major_collector, "copying")) {
+		mono_sgen_copying_init (&major);
+	} else {
+		fprintf (stderr, "Unknown major collector `%s'.\n", major_collector);
+		exit (1);
+	}
+
+	if (opts) {
+		for (ptr = opts; *ptr; ++ptr) {
+			char *opt = *ptr;
+			if (g_str_has_prefix (opt, "major="))
+				continue;
 #ifdef USER_CONFIG
 			if (g_str_has_prefix (opt, "nursery-size=")) {
 				long val;
 				opt = strchr (opt, '=') + 1;
-				if (*opt && parse_environment_string_extract_number (opt, &val)) {
+				if (*opt && mono_sgen_parse_environment_string_extract_number (opt, &val)) {
 					default_nursery_size = val;
 #ifdef SGEN_ALIGN_NURSERY
 					if ((val & (val - 1))) {
@@ -6250,50 +6326,28 @@ mono_gc_base_init (void)
 					fprintf (stderr, "nursery-size must be an integer.\n");
 					exit (1);
 				}
-			} else
+				continue;
+			}
 #endif
-			if (g_str_has_prefix (opt, "major=")) {
-				opt = strchr (opt, '=') + 1;
-				major_collector = g_strdup (opt);
-			} else {
+			if (!(major.handle_gc_param && major.handle_gc_param (opt))) {
 				fprintf (stderr, "MONO_GC_PARAMS must be a comma-delimited list of one or more of the following:\n");
 				fprintf (stderr, "  nursery-size=N (where N is an integer, possibly with a k, m or a g suffix)\n");
-				fprintf (stderr, "  major=COLLECTOR (where collector is `marksweep' or `copying')\n");
+				fprintf (stderr, "  major=COLLECTOR (where collector is `marksweep', `marksweep-par' or `copying')\n");
+				if (major.print_gc_param_usage)
+					major.print_gc_param_usage ();
 				exit (1);
 			}
 		}
 		g_strfreev (opts);
 	}
 
+	if (major_collector)
+		g_free (major_collector);
+
 	nursery_size = DEFAULT_NURSERY_SIZE;
 	minor_collection_allowance = MIN_MINOR_COLLECTION_ALLOWANCE;
 
-	init_stats ();
-	mono_sgen_init_internal_allocator ();
-
-	mono_sgen_register_fixed_internal_mem_type (INTERNAL_MEM_FRAGMENT, sizeof (Fragment));
-	mono_sgen_register_fixed_internal_mem_type (INTERNAL_MEM_SECTION, SGEN_SIZEOF_GC_MEM_SECTION);
-	mono_sgen_register_fixed_internal_mem_type (INTERNAL_MEM_FINALIZE_ENTRY, sizeof (FinalizeEntry));
-	mono_sgen_register_fixed_internal_mem_type (INTERNAL_MEM_DISLINK, sizeof (DisappearingLink));
-	mono_sgen_register_fixed_internal_mem_type (INTERNAL_MEM_ROOT_RECORD, sizeof (RootRecord));
-	mono_sgen_register_fixed_internal_mem_type (INTERNAL_MEM_GRAY_QUEUE, sizeof (GrayQueueSection));
-	g_assert (sizeof (GenericStoreRememberedSet) == sizeof (gpointer) * STORE_REMSET_BUFFER_SIZE);
-	mono_sgen_register_fixed_internal_mem_type (INTERNAL_MEM_STORE_REMSET, sizeof (GenericStoreRememberedSet));
-	mono_sgen_register_fixed_internal_mem_type (INTERNAL_MEM_EPHEMERON_LINK, sizeof (EphemeronLinkNode));
-
 	alloc_nursery ();
-
-	if (!major_collector || !strcmp (major_collector, "marksweep"))
-		mono_sgen_marksweep_init (&major, DEFAULT_NURSERY_BITS, nursery_start, nursery_real_end);
-	else if (!strcmp (major_collector, "copying"))
-		mono_sgen_copying_init (&major, DEFAULT_NURSERY_BITS, nursery_start, nursery_real_end);
-	else {
-		fprintf (stderr, "Unknown major collector `%s'.\n", major_collector);
-		exit (1);
-	}
-
-	if (major_collector)
-		g_free (major_collector);
 
 	if ((env = getenv ("MONO_GC_DEBUG"))) {
 		opts = g_strsplit (env, ",", -1);
@@ -6636,12 +6690,19 @@ create_allocator (int atype)
 	mono_method_get_header (res)->init_locals = FALSE;
 
 	info = mono_image_alloc0 (mono_defaults.corlib, sizeof (AllocatorWrapperInfo));
+	info->gc_name = "sgen";
 	info->alloc_type = atype;
 	mono_marshal_set_wrapper_info (res, info);
 
 	return res;
 }
 #endif
+
+const char *
+mono_gc_get_gc_name (void)
+{
+	return "sgen";
+}
 
 static MonoMethod* alloc_method_cache [ATYPE_NUM];
 static MonoMethod *write_barrier_method;
@@ -6984,12 +7045,6 @@ mono_gc_is_moving (void)
 
 gboolean
 mono_gc_is_disabled (void)
-{
-	return FALSE;
-}
-
-gboolean
-mono_sgen_is_worker_thread (pthread_t thread)
 {
 	return FALSE;
 }
