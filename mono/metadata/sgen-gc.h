@@ -33,8 +33,6 @@
 #include <mono/metadata/class-internals.h>
 #include <mono/metadata/object-internals.h>
 
-/* #define SGEN_PARALLEL_MARK */
-
 /*
  * Turning on heavy statistics will turn off the managed allocator and
  * the managed write barrier.
@@ -193,18 +191,13 @@ const static int restart_signal_num = SIGXCPU;
 #define LOCK_INTERRUPTION pthread_mutex_lock (&interruption_mutex)
 #define UNLOCK_INTERRUPTION pthread_mutex_unlock (&interruption_mutex)
 
-#ifdef SGEN_PARALLEL_MARK
 #define SGEN_CAS_PTR	InterlockedCompareExchangePointer
 #define SGEN_ATOMIC_ADD(x,i)	do {					\
 		int __old_x;						\
 		do {							\
 			__old_x = (x);					\
-		} while (InterlockedCompareExchange (&(x), __old_x, __old_x + (i)) != __old_x); \
+		} while (InterlockedCompareExchange (&(x), __old_x + (i), __old_x) != __old_x); \
 	} while (0)
-#else
-#define SGEN_CAS_PTR(p,n,c)	((*(void**)(p) == (void*)(c)) ? (*(void**)(p) = (void*)(n), (void*)(c)) : (*(void**)(p)))
-#define SGEN_ATOMIC_ADD(x,i)	((x) += (i))
-#endif
 
 /* non-pthread will need to provide their own version of start/stop */
 #define USE_SIGNAL_BASED_START_STOP_WORLD 1
@@ -506,6 +499,8 @@ gsize* mono_sgen_get_complex_descriptor (GCVTable *vt) MONO_INTERNAL;
 		}	\
 	} while (0)
 
+typedef struct _SgenInternalAllocator SgenInternalAllocator;
+
 #define SGEN_GRAY_QUEUE_SECTION_SIZE	(128 - 3)
 
 /*
@@ -520,10 +515,16 @@ struct _GrayQueueSection {
 };
 
 typedef struct _SgenGrayQueue SgenGrayQueue;
+
+typedef void (*GrayQueueAllocPrepareFunc) (SgenGrayQueue*);
+
 struct _SgenGrayQueue {
+	SgenInternalAllocator *allocator;
 	GrayQueueSection *first;
 	GrayQueueSection *free_list;
 	int balance;
+	GrayQueueAllocPrepareFunc alloc_prepare_func;
+	void *alloc_prepare_data;
 };
 
 #if SGEN_MAX_DEBUG_LEVEL >= 9
@@ -590,19 +591,22 @@ enum {
 	INTERNAL_MEM_MS_TABLES,
 	INTERNAL_MEM_MS_BLOCK_INFO,
 	INTERNAL_MEM_EPHEMERON_LINK,
+	INTERNAL_MEM_WORKER_DATA,
 	INTERNAL_MEM_MAX
 };
 
 #define SGEN_INTERNAL_FREELIST_NUM_SLOTS	30
 
-typedef struct _SgenInternalAllocator SgenInternalAllocator;
 struct _SgenInternalAllocator {
 	SgenPinnedChunk *chunk_list;
 	SgenPinnedChunk *free_lists [SGEN_INTERNAL_FREELIST_NUM_SLOTS];
+	void *delayed_free_lists [SGEN_INTERNAL_FREELIST_NUM_SLOTS];
 	long small_internal_mem_bytes [INTERNAL_MEM_MAX];
 };
 
 void mono_sgen_init_internal_allocator (void) MONO_INTERNAL;
+
+SgenInternalAllocator* mono_sgen_get_unmanaged_allocator (void) MONO_INTERNAL;
 
 const char* mono_sgen_internal_mem_type_name (int type) MONO_INTERNAL;
 void mono_sgen_report_internal_mem_usage (void) MONO_INTERNAL;
@@ -621,10 +625,17 @@ void mono_sgen_free_internal (void *addr, int type) MONO_INTERNAL;
 void* mono_sgen_alloc_internal_dynamic (size_t size, int type) MONO_INTERNAL;
 void mono_sgen_free_internal_dynamic (void *addr, size_t size, int type) MONO_INTERNAL;
 
+void* mono_sgen_alloc_internal_fixed (SgenInternalAllocator *allocator, int type) MONO_INTERNAL;
+void mono_sgen_free_internal_fixed (SgenInternalAllocator *allocator, void *addr, int type) MONO_INTERNAL;
+
 void* mono_sgen_alloc_internal_full (SgenInternalAllocator *allocator, size_t size, int type) MONO_INTERNAL;
 void mono_sgen_free_internal_full (SgenInternalAllocator *allocator, void *addr, size_t size, int type) MONO_INTERNAL;
 
+void mono_sgen_free_internal_delayed (void *addr, int type, SgenInternalAllocator *thread_allocator) MONO_INTERNAL;
+
 void mono_sgen_debug_printf (int level, const char *format, ...) MONO_INTERNAL;
+
+gboolean mono_sgen_parse_environment_string_extract_number (const char *str, glong *out) MONO_INTERNAL;
 
 void mono_sgen_internal_scan_objects (SgenInternalAllocator *alc, IterateObjectCallbackFunc callback, void *callback_data) MONO_INTERNAL;
 void mono_sgen_internal_scan_pinned_objects (SgenInternalAllocator *alc, IterateObjectCallbackFunc callback, void *callback_data) MONO_INTERNAL;
@@ -640,7 +651,9 @@ void mono_sgen_add_to_global_remset (gpointer ptr) MONO_INTERNAL;
 typedef struct _SgenMajorCollector SgenMajorCollector;
 struct _SgenMajorCollector {
 	size_t section_size;
+	gboolean is_parallel;
 
+	void* (*alloc_heap) (mword nursery_size, mword nursery_align, int nursery_bits);
 	gboolean (*is_object_live) (char *obj);
 	void* (*alloc_small_pinned_obj) (size_t size, gboolean has_references);
 	void* (*alloc_degraded) (MonoVTable *vtable, size_t size);
@@ -667,10 +680,15 @@ struct _SgenMajorCollector {
 	gboolean (*obj_is_from_pinned_alloc) (char *obj);
 	void (*report_pinned_memory_usage) (void);
 	int (*get_num_major_sections) (void);
+	gboolean (*handle_gc_param) (const char *opt);
+	void (*print_gc_param_usage) (void);
 };
 
-void mono_sgen_marksweep_init (SgenMajorCollector *collector, int nursery_bits, char *nursery_start, char *nursery_end) MONO_INTERNAL;
-void mono_sgen_copying_init (SgenMajorCollector *collector, int the_nursery_bits, char *the_nursery_start, char *the_nursery_end) MONO_INTERNAL;
+void mono_sgen_marksweep_init (SgenMajorCollector *collector) MONO_INTERNAL;
+void mono_sgen_marksweep_fixed_init (SgenMajorCollector *collector) MONO_INTERNAL;
+void mono_sgen_marksweep_par_init (SgenMajorCollector *collector) MONO_INTERNAL;
+void mono_sgen_marksweep_fixed_par_init (SgenMajorCollector *collector) MONO_INTERNAL;
+void mono_sgen_copying_init (SgenMajorCollector *collector) MONO_INTERNAL;
 
 /*
  * This function can be called on an object whose first word, the
