@@ -6355,7 +6355,7 @@ mymono_metadata_type_hash (MonoType *t1)
 	case MONO_TYPE_CLASS:
 	case MONO_TYPE_SZARRAY:
 		/* check if the distribution is good enough */
-		return ((hash << 5) - hash) ^ g_str_hash (t1->data.klass->name);
+		return ((hash << 5) - hash) ^ mono_aligned_addr_hash (t1->data.klass);
 	case MONO_TYPE_PTR:
 		return ((hash << 5) - hash) ^ mymono_metadata_type_hash (t1->data.type);
 	case MONO_TYPE_GENERICINST: {
@@ -6369,6 +6369,9 @@ mymono_metadata_type_hash (MonoType *t1)
 		}
 		return hash;
 	}
+	case MONO_TYPE_VAR:
+	case MONO_TYPE_MVAR:
+		return ((hash << 5) - hash) ^ GPOINTER_TO_UINT (t1->data.generic_param);
 	}
 	return hash;
 }
@@ -6674,11 +6677,15 @@ mono_field_get_object (MonoDomain *domain, MonoClass *klass, MonoClassField *fie
 	res->klass = klass;
 	res->field = field;
 	MONO_OBJECT_SETREF (res, name, mono_string_new (domain, mono_field_get_name (field)));
-	if (is_field_on_inst (field))
+
+	if (is_field_on_inst (field)) {
 		res->attrs = get_field_on_inst_generic_type (field)->attrs;
-	else
-		res->attrs = field->type->attrs;
-	MONO_OBJECT_SETREF (res, type, mono_type_get_object (domain, field->type));
+		MONO_OBJECT_SETREF (res, type, mono_type_get_object (domain, field->type));
+	} else {
+		if (field->type)
+			MONO_OBJECT_SETREF (res, type, mono_type_get_object (domain, field->type));
+		res->attrs = mono_field_get_flags (field);
+	}
 	CACHE_OBJECT (MonoReflectionField *, field, res, klass);
 }
 
@@ -7510,7 +7517,6 @@ mono_reflection_get_type_internal (MonoImage *rootimage, MonoImage* image, MonoT
 	}
 	if (!klass)
 		return NULL;
-	mono_class_init (klass);
 
 	if (info->type_arguments) {
 		MonoType **type_args = g_new0 (MonoType *, info->type_arguments->len);
@@ -7551,7 +7557,6 @@ mono_reflection_get_type_internal (MonoImage *rootimage, MonoImage* image, MonoT
 		} else { /* array rank */
 			klass = mono_bounded_array_class_get (klass, modval, bounded);
 		}
-		mono_class_init (klass);
 	}
 
 	return &klass->byval_arg;
@@ -8356,35 +8361,35 @@ mono_reflection_create_custom_attr_data_args (MonoImage *image, MonoMethod *meth
 	*named_args = namedargs;
 }
 
-static MonoObject*
-create_custom_attr_data (MonoImage *image, MonoMethod *method, const guchar *data, guint32 len)
+void
+mono_reflection_resolve_custom_attribute_data (MonoReflectionMethod *ref_method, MonoReflectionAssembly *assembly, gpointer data, guint32 len, MonoArray **ctor_args, MonoArray **named_args)
 {
-	MonoArray *typedargs, *namedargs;
-	static MonoMethod *ctor;
 	MonoDomain *domain;
-	MonoObject *attr;
-	void *params [3];
+	MonoArray *typedargs, *namedargs;
+	MonoImage *image;
+	MonoMethod *method;
 	CattrNamedArg *arginfo;
 	int i;
 
-	mono_class_init (method->klass);
+	*ctor_args = NULL;
+	*named_args = NULL;
 
-	if (!ctor)
-		ctor = mono_class_get_method_from_name (mono_defaults.customattribute_data_class, ".ctor", 3);
+	if (len == 0)
+		return;
 
-	domain = mono_domain_get ();
-	if (len == 0) {
-		/* This is for Attributes with no parameters */
-		attr = mono_object_new (domain, mono_defaults.customattribute_data_class);
-		params [0] = mono_method_get_object (domain, method, NULL);
-		params [1] = params [2] = NULL;
-		mono_runtime_invoke (method, attr, params, NULL);
-		return attr;
-	}
+	image = assembly->assembly->image;
+	method = ref_method->method;
+	domain = mono_object_domain (ref_method);
+
+	if (!mono_class_init (method->klass))
+		mono_raise_exception (mono_class_get_exception_for_failure (method->klass));
 
 	mono_reflection_create_custom_attr_data_args (image, method, data, len, &typedargs, &namedargs, &arginfo);
+	if (mono_loader_get_last_error ())
+		mono_raise_exception (mono_loader_error_prepare_exception (mono_loader_get_last_error ()));
+
 	if (!typedargs || !namedargs)
-		return NULL;
+		return;
 
 	for (i = 0; i < mono_method_signature (method)->param_count; ++i) {
 		MonoObject *obj = mono_array_get (typedargs, MonoObject*, i);
@@ -8409,10 +8414,29 @@ create_custom_attr_data (MonoImage *image, MonoMethod *method, const guchar *dat
 		mono_array_setref (namedargs, i, namedarg);
 	}
 
+	*ctor_args = typedargs;
+	*named_args = namedargs;
+}
+
+static MonoObject*
+create_custom_attr_data (MonoImage *image, MonoCustomAttrEntry *cattr)
+{
+	static MonoMethod *ctor;
+	MonoDomain *domain;
+	MonoObject *attr;
+	void *params [4];
+
+	g_assert (image->assembly);
+
+	if (!ctor)
+		ctor = mono_class_get_method_from_name (mono_defaults.customattribute_data_class, ".ctor", 4);
+
+	domain = mono_domain_get ();
 	attr = mono_object_new (domain, mono_defaults.customattribute_data_class);
-	params [0] = mono_method_get_object (domain, method, NULL);
-	params [1] = typedargs;
-	params [2] = namedargs;
+	params [0] = mono_method_get_object (domain, cattr->ctor, NULL);
+	params [1] = mono_assembly_get_object (domain, image->assembly);
+	params [2] = (gpointer)&cattr->data;
+	params [3] = &cattr->data_size;
 	mono_runtime_invoke (ctor, attr, params, NULL);
 	return attr;
 }
@@ -8470,7 +8494,7 @@ mono_custom_attrs_data_construct (MonoCustomAttrInfo *cinfo)
 	
 	result = mono_array_new (mono_domain_get (), mono_defaults.customattribute_data_class, cinfo->num_attrs);
 	for (i = 0; i < cinfo->num_attrs; ++i) {
-		attr = create_custom_attr_data (cinfo->image, cinfo->attrs [i].ctor, cinfo->attrs [i].data, cinfo->attrs [i].data_size);
+		attr = create_custom_attr_data (cinfo->image, &cinfo->attrs [i]);
 		mono_array_setref (result, i, attr);
 	}
 	return result;
@@ -8790,8 +8814,7 @@ mono_reflection_get_custom_attrs_info (MonoObject *obj)
 	if (klass == mono_defaults.monotype_class) {
 		MonoType *type = mono_reflection_type_get_handle ((MonoReflectionType *)obj);
 		klass = mono_class_from_mono_type (type);
-		if (!mono_class_init (klass))
-			mono_raise_exception (mono_class_get_exception_for_failure (klass));
+		/*We cannot mono_class_init the class from which we'll load the custom attributes since this must work with broken types.*/
 		cinfo = mono_custom_attrs_from_class (klass);
 	} else if (strcmp ("Assembly", klass->name) == 0 || strcmp ("MonoAssembly", klass->name) == 0) {
 		MonoReflectionAssembly *rassembly = (MonoReflectionAssembly*)obj;

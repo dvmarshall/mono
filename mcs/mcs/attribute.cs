@@ -353,7 +353,7 @@ namespace Mono.CSharp {
 				}
 			}
 
-			var char_set = Import.ImportType (typeof (CharSet));
+			var char_set = rc.Compiler.MetaImporter.ImportType (typeof (CharSet));	// TODO: typeof
 			NamedArguments.Add (new NamedArgument (CharSetEnumMember, loc,
 				Constant.CreateConstant (rc, char_set, RootContext.ToplevelTypes.DefaultCharSet, Location)));
  		}
@@ -483,6 +483,7 @@ namespace Mono.CSharp {
 					}
 
 					obsolete_attr = pi.GetAttributeObsolete ();
+					pi.MemberDefinition.SetIsAssigned ();
 				} else {
 					var fi = ((FieldExpr) member).Spec;
 
@@ -498,6 +499,7 @@ namespace Mono.CSharp {
 					}
 
 					obsolete_attr = fi.GetAttributeObsolete ();
+					fi.MemberDefinition.SetIsAssigned ();
 				}
 
 				if (obsolete_attr != null && !context.IsObsolete)

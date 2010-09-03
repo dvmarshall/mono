@@ -730,32 +730,42 @@ namespace Mono.CSharp {
 			if (Expr == null) {
 				if (ec.ReturnType == TypeManager.void_type)
 					return true;
-				
-				ec.Report.Error (126, loc,
-					"An object of a type convertible to `{0}' is required for the return statement",
-					TypeManager.CSharpName (ec.ReturnType));
+
+				if (ec.CurrentIterator != null) {
+					Error_ReturnFromIterator (ec);
+				} else {
+					ec.Report.Error (126, loc,
+						"An object of a type convertible to `{0}' is required for the return statement",
+						ec.ReturnType.GetSignatureForError ());
+				}
+
 				return false;
-			}
-
-			if (ec.CurrentBlock.Toplevel.IsIterator) {
-				ec.Report.Error (1622, loc, "Cannot return a value from iterators. Use the yield return " +
-						  "statement to return a value, or yield break to end the iteration");
-			}
-
-			AnonymousExpression am = ec.CurrentAnonymousMethod;
-			if (am == null && ec.ReturnType == TypeManager.void_type) {
-				ec.Report.Error (127, loc, "`{0}': A return keyword must not be followed by any expression when method returns void",
-					ec.GetSignatureForError ());
 			}
 
 			Expr = Expr.Resolve (ec);
+
+			AnonymousExpression am = ec.CurrentAnonymousMethod;
+			if (am == null) {
+				if (ec.ReturnType == TypeManager.void_type) {
+					ec.Report.Error (127, loc,
+						"`{0}': A return keyword must not be followed by any expression when method returns void",
+						ec.GetSignatureForError ());
+				}
+			} else {
+				if (am.IsIterator) {
+					Error_ReturnFromIterator (ec);
+					return false;
+				}
+
+				var l = am as AnonymousMethodBody;
+				if (l != null && l.ReturnTypeInference != null && Expr != null) {
+					l.ReturnTypeInference.AddCommonTypeBound (Expr.Type);
+					return true;
+				}
+			}
+
 			if (Expr == null)
 				return false;
-
-			if (ec.HasSet (ResolveContext.Options.InferReturnType)) {
-				ec.ReturnTypeInference.AddCommonTypeBound (Expr.Type);
-				return true;
-			}
 
 			if (Expr.Type != ec.ReturnType) {
 				Expr = Convert.ImplicitConversionRequired (ec, Expr, ec.ReturnType, loc);
@@ -786,6 +796,12 @@ namespace Mono.CSharp {
 				ec.Emit (OpCodes.Leave, ec.ReturnLabel);
 			else
 				ec.Emit (OpCodes.Ret);
+		}
+
+		void Error_ReturnFromIterator (ResolveContext rc)
+		{
+			rc.Report.Error (1622, loc,
+				"Cannot return a value from iterators. Use the yield return statement to return a value, or yield break to end the iteration");
 		}
 
 		protected override void CloneTo (CloneContext clonectx, Statement t)
@@ -1138,7 +1154,8 @@ namespace Mono.CSharp {
 	//
 	// The information about a user-perceived local variable
 	//
-	public class LocalInfo : IKnownVariable, ILocalVariable {
+	public class LocalInfo : IKnownVariable, ILocalVariable
+	{
 		public readonly FullNamedExpression Type;
 
 		public TypeSpec VariableType;
@@ -1939,7 +1956,7 @@ namespace Mono.CSharp {
 				constants.Remove (name);
 
 				if (!variable_type.IsConstantCompatible) {
-					Const.Error_InvalidConstantType (variable_type, loc, ec.Report);
+					Const.Error_InvalidConstantType (variable_type, vi.Location, ec.Report);
 					continue;
 				}
 
@@ -2249,8 +2266,9 @@ namespace Mono.CSharp {
 
 			clonectx.AddBlockMap (this, target);
 
-			target.Toplevel = (ToplevelBlock) clonectx.LookupBlock (Toplevel);
-			target.Explicit = (ExplicitBlock) clonectx.LookupBlock (Explicit);
+			target.Toplevel = (ToplevelBlock) (Toplevel == this ? target : clonectx.LookupBlock (Toplevel));
+			target.Explicit = (ExplicitBlock) (Explicit == this ? target : clonectx.LookupBlock (Explicit));
+
 			if (Parent != null)
 				target.Parent = clonectx.RemapBlockCopy (Parent);
 
@@ -2346,12 +2364,11 @@ namespace Mono.CSharp {
 
 			if (am_storey == null) {
 				MemberBase mc = ec.MemberContext as MemberBase;
-				GenericMethod gm = mc == null ? null : mc.GenericMethod;
 
 				//
 				// Creates anonymous method storey for this block
 				//
-				am_storey = new AnonymousMethodStorey (this, ec.CurrentMemberDefinition.Parent.PartialContainer, mc, gm, "AnonStorey");
+				am_storey = new AnonymousMethodStorey (this, ec.CurrentMemberDefinition.Parent.PartialContainer, mc, ec.CurrentTypeParameters, "AnonStorey");
 			}
 
 			return am_storey;
@@ -2608,10 +2625,11 @@ namespace Mono.CSharp {
 
 		protected override void CloneTo (CloneContext clonectx, Statement t)
 		{
-			ToplevelBlock target = (ToplevelBlock) t;
 			base.CloneTo (clonectx, t);
 
 			if (parameters.Count != 0) {
+				ToplevelBlock target = (ToplevelBlock) t;
+
 				target.parameter_info = new ToplevelParameterInfo[parameters.Count];
 				for (int i = 0; i < parameters.Count; ++i)
 					target.parameter_info[i] = new ToplevelParameterInfo (target, i);
@@ -2643,7 +2661,7 @@ namespace Mono.CSharp {
 			for (int i = 0; i < n; ++i) {
 				parameter_info [i] = new ToplevelParameterInfo (this, i);
 
-				Parameter p = parameters [i];
+				var p = parameters.FixedParameters [i];
 				if (p == null)
 					continue;
 
@@ -2709,7 +2727,7 @@ namespace Mono.CSharp {
 			int count = parameters.Count;
 			Arguments args = new Arguments (count);
 			for (int i = 0; i < count; ++i) {
-				var arg_expr = new ParameterReference (parameter_info[i], parameters[i].Location);
+				var arg_expr = new ParameterReference (parameter_info[i], parameter_info[i].Location);
 				args.Add (new Argument (arg_expr));
 			}
 
@@ -4819,14 +4837,15 @@ namespace Mono.CSharp {
 			if (expr == null)
 				return false;
 
-			if (!expr.Type.ImplementsInterface (TypeManager.idisposable_type) &&
-				Convert.ImplicitConversion (ec, expr, TypeManager.idisposable_type, loc) == null) {
-				if (expr.Type != InternalType.Dynamic) {
+			if (expr.Type != TypeManager.idisposable_type && !expr.Type.ImplementsInterface (TypeManager.idisposable_type)) {
+				if (TypeManager.IsNullableType (expr.Type)) {
+					// Will handle it a custom code
+				} else if (expr.Type == InternalType.Dynamic) {
+					expr = Convert.ImplicitConversionStandard (ec, expr, TypeManager.idisposable_type, loc);
+				} else {
 					Using.Error_IsNotConvertibleToIDisposable (ec, expr);
 					return false;
 				}
-
-				expr = Convert.ImplicitConversionRequired (ec, expr, TypeManager.idisposable_type, loc);
 			}
 
 			var expr_type = expr.Type;
@@ -4976,20 +4995,16 @@ namespace Mono.CSharp {
 				return true;
 			}
 
-			Expression e = Convert.ImplicitConversionStandard (ec, assign, TypeManager.idisposable_type, var.Location);
-			if (e == null) {
-				if (assign.Type == InternalType.Dynamic) {
-					e = Convert.ImplicitConversionRequired (ec, assign, TypeManager.idisposable_type, loc);
-					var = new TemporaryVariable (e.Type, loc);
-					assign = new SimpleAssign (var, e, loc).ResolveStatement (ec);
-					return true;
-				}
-
-				Error_IsNotConvertibleToIDisposable (ec, var);
-				return false;
+			Expression e;
+			if (assign.Type == InternalType.Dynamic) {
+				e = Convert.ImplicitConversionStandard (ec, assign, TypeManager.idisposable_type, loc);
+			    var = new TemporaryVariable (e.Type, loc);
+			    assign = new SimpleAssign (var, e, loc).ResolveStatement (ec);
+			    return true;
 			}
 
-			throw new NotImplementedException ("covariance?");
+			Error_IsNotConvertibleToIDisposable (ec, var);
+			return false;
 		}
 
 		protected override void CloneTo (CloneContext clonectx, Statement t)
@@ -5440,8 +5455,16 @@ namespace Mono.CSharp {
 
 				VarExpr ve = var_type as VarExpr;
 				if (ve != null) {
-					// Infer implicitly typed local variable from foreach enumerable type
-					var_type = new TypeExpression (current_pe.Type, var_type.Location);
+					if (is_dynamic) {
+						// Source type is dynamic, set element type to dynamic too
+						var_type = new TypeExpression (InternalType.Dynamic, var_type.Location);
+					} else {
+						// Infer implicitly typed local variable from foreach enumerable type
+						var_type = new TypeExpression (current_pe.Type, var_type.Location);
+					}
+				} else if (is_dynamic) {
+					// Explicit cast of dynamic collection elements has to be done at runtime
+					current_pe = EmptyCast.Create (current_pe, InternalType.Dynamic);
 				}
 
 				var_type = var_type.ResolveAsTypeTerminal (ec, false);

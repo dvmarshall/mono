@@ -1462,6 +1462,11 @@ mono_arch_allocate_vars (MonoCompile *m)
 			}
 			if (MONO_TYPE_ISSTRUCT (sig->params [i]) && size < sizeof (gpointer))
 				size = align = sizeof (gpointer);
+			/* 
+			 * Use at least 4/8 byte alignment, since these might be passed in registers, and
+			 * they are saved using std in the prolog.
+			 */
+			align = sizeof (gpointer);
 			offset += align - 1;
 			offset &= ~(align - 1);
 			inst->inst_offset = offset;
@@ -3546,7 +3551,22 @@ mono_arch_output_basic_block (MonoCompile *cfg, MonoBasicBlock *bb)
 			}
 			break;
 		case OP_BREAK:
-			ppc_break (code);
+			/*
+			 * gdb does not like encountering a trap in the debugged code. So 
+			 * instead of emitting a trap, we emit a call a C function and place a 
+			 * breakpoint there.
+			 */
+			//ppc_break (code);
+			ppc_mr (code, ppc_r3, ins->sreg1);
+			mono_add_patch_info (cfg, code - cfg->native_code, MONO_PATCH_INFO_INTERNAL_METHOD, 
+					     (gpointer)"mono_break");
+			if ((FORCE_INDIR_CALL || cfg->method->dynamic) && !cfg->compile_aot) {
+				ppc_load_func (code, ppc_r0, 0);
+				ppc_mtlr (code, ppc_r0);
+				ppc_blrl (code);
+			} else {
+				ppc_bl (code, 0);
+			}
 			break;
 		case OP_ADDCC:
 		case OP_IADDCC:
@@ -4957,7 +4977,7 @@ mono_arch_emit_prolog (MonoCompile *cfg)
 					} else {
 						if (ppc_is_imm32 (inst->inst_offset)) {
 							ppc_addis (code, ppc_r11, inst->inst_basereg, ppc_ha(inst->inst_offset));
-							ppc_stb (code, ainfo->reg, ppc_r11, inst->inst_offset);
+							ppc_stb (code, ainfo->reg, inst->inst_offset, ppc_r11);
 						} else {
 							ppc_load (code, ppc_r11, inst->inst_offset);
 							ppc_stbx (code, ainfo->reg, inst->inst_basereg, ppc_r11);
@@ -4970,7 +4990,7 @@ mono_arch_emit_prolog (MonoCompile *cfg)
 					} else {
 						if (ppc_is_imm32 (inst->inst_offset)) {
 							ppc_addis (code, ppc_r11, inst->inst_basereg, ppc_ha(inst->inst_offset));
-							ppc_sth (code, ainfo->reg, ppc_r11, inst->inst_offset);
+							ppc_sth (code, ainfo->reg, inst->inst_offset, ppc_r11);
 						} else {
 							ppc_load (code, ppc_r11, inst->inst_offset);
 							ppc_sthx (code, ainfo->reg, inst->inst_basereg, ppc_r11);
@@ -4984,7 +5004,7 @@ mono_arch_emit_prolog (MonoCompile *cfg)
 					} else {
 						if (ppc_is_imm32 (inst->inst_offset)) {
 							ppc_addis (code, ppc_r11, inst->inst_basereg, ppc_ha(inst->inst_offset));
-							ppc_stw (code, ainfo->reg, ppc_r11, inst->inst_offset);
+							ppc_stw (code, ainfo->reg, inst->inst_offset, ppc_r11);
 						} else {
 							ppc_load (code, ppc_r11, inst->inst_offset);
 							ppc_stwx (code, ainfo->reg, inst->inst_basereg, ppc_r11);
@@ -5018,7 +5038,7 @@ mono_arch_emit_prolog (MonoCompile *cfg)
 					} else {
 						if (ppc_is_imm32 (inst->inst_offset)) {
 							ppc_addis (code, ppc_r11, inst->inst_basereg, ppc_ha(inst->inst_offset));
-							ppc_stptr (code, ainfo->reg, ppc_r11, inst->inst_offset);
+							ppc_stptr (code, ainfo->reg, inst->inst_offset, ppc_r11);
 						} else {
 							ppc_load (code, ppc_r11, inst->inst_offset);
 							ppc_stptr_indexed (code, ainfo->reg, inst->inst_basereg, ppc_r11);
@@ -5038,7 +5058,7 @@ mono_arch_emit_prolog (MonoCompile *cfg)
 					} else {
 						if (ppc_is_imm32 (inst->inst_offset)) {
 							ppc_addis (code, ppc_r11, inst->inst_basereg, ppc_ha(inst->inst_offset));
-							ppc_stb (code, ppc_r0, ppc_r11, inst->inst_offset);
+							ppc_stb (code, ppc_r0, inst->inst_offset, ppc_r11);
 						} else {
 							ppc_load (code, ppc_r11, inst->inst_offset);
 							ppc_stbx (code, ppc_r0, inst->inst_basereg, ppc_r11);
@@ -5051,7 +5071,7 @@ mono_arch_emit_prolog (MonoCompile *cfg)
 					} else {
 						if (ppc_is_imm32 (inst->inst_offset)) {
 							ppc_addis (code, ppc_r11, inst->inst_basereg, ppc_ha(inst->inst_offset));
-							ppc_sth (code, ppc_r0, ppc_r11, inst->inst_offset);
+							ppc_sth (code, ppc_r0, inst->inst_offset, ppc_r11);
 						} else {
 							ppc_load (code, ppc_r11, inst->inst_offset);
 							ppc_sthx (code, ppc_r0, inst->inst_basereg, ppc_r11);
@@ -5065,7 +5085,7 @@ mono_arch_emit_prolog (MonoCompile *cfg)
 					} else {
 						if (ppc_is_imm32 (inst->inst_offset)) {
 							ppc_addis (code, ppc_r11, inst->inst_basereg, ppc_ha(inst->inst_offset));
-							ppc_stw (code, ppc_r0, ppc_r11, inst->inst_offset);
+							ppc_stw (code, ppc_r0, inst->inst_offset, ppc_r11);
 						} else {
 							ppc_load (code, ppc_r11, inst->inst_offset);
 							ppc_stwx (code, ppc_r0, inst->inst_basereg, ppc_r11);
@@ -5103,7 +5123,7 @@ mono_arch_emit_prolog (MonoCompile *cfg)
 					} else {
 						if (ppc_is_imm32 (inst->inst_offset)) {
 							ppc_addis (code, ppc_r11, inst->inst_basereg, ppc_ha(inst->inst_offset));
-							ppc_stptr (code, ppc_r0, ppc_r11, inst->inst_offset);
+							ppc_stptr (code, ppc_r0, inst->inst_offset, ppc_r11);
 						} else {
 							ppc_load (code, ppc_r11, inst->inst_offset);
 							ppc_stptr_indexed (code, ppc_r0, inst->inst_basereg, ppc_r11);

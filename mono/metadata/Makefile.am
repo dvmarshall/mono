@@ -61,6 +61,7 @@ null_sources = \
 	console-null.c
 
 sgen_sources = \
+	sgen-cardtable.c	\
 	sgen-gray.c		\
 	sgen-pinning.c		\
 	sgen-pinning-stats.c	\
@@ -142,6 +143,7 @@ libmonoruntime_la_SOURCES = \
 	mono-wsq.h		\
 	monitor.c		\
 	monitor.h		\
+	nacl-stub.c		\
 	normalization-tables.h	\
 	null-gc.c		\
 	number-formatter.h	\

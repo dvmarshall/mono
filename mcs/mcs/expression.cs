@@ -1342,6 +1342,12 @@ namespace Mono.CSharp {
 				if (TypeManager.IsGenericParameter (t))
 					return ResolveGenericParameter (ec, d, (TypeParameterSpec) t);
 
+				if (t == InternalType.Dynamic) {
+					ec.Report.Warning (1981, 3, loc,
+						"Using `{0}' to test compatibility with `{1}' is identical to testing compatibility with `object'",
+						OperatorName, t.GetSignatureForError ());
+				}
+
 				if (TypeManager.IsStruct (d)) {
 					if (Convert.ImplicitBoxingConversion (null, d, t) != null)
 						return CreateConstantResult (ec, true);
@@ -1445,6 +1451,12 @@ namespace Mono.CSharp {
 			if (expr.IsNull && TypeManager.IsNullableType (type)) {
 				return Nullable.LiftedNull.CreateFromExpression (ec, this);
 			}
+
+			// If the compile-time type of E is dynamic, unlike the cast operator the as operator is not dynamically bound
+			if (etype == InternalType.Dynamic) {
+				do_isinst = true;
+				return this;
+			}
 			
 			Expression e = Convert.ImplicitConversion (ec, expr, type, loc);
 			if (e != null){
@@ -1463,12 +1475,6 @@ namespace Mono.CSharp {
 			if (TypeManager.ContainsGenericParameters (etype) ||
 			    TypeManager.ContainsGenericParameters (type)) {
 				expr = new BoxedCast (expr, etype);
-				do_isinst = true;
-				return this;
-			}
-
-			// If the compile-time type of E is dynamic, unlike the cast operator the as operator is not dynamically bound
-			if (etype == InternalType.Dynamic) {
 				do_isinst = true;
 				return this;
 			}
@@ -1529,10 +1535,6 @@ namespace Mono.CSharp {
 
 			if (type.IsPointer && !ec.IsUnsafe) {
 				UnsafeError (ec, loc);
-			} else if (expr.Type == InternalType.Dynamic) {
-				Arguments arg = new Arguments (1);
-				arg.Add (new Argument (expr));
-				return new DynamicConversion (type, CSharpBinderFlags.ConvertExplicit, arg, loc).Resolve (ec);
 			}
 
 			var res = Convert.ExplicitConversion (ec, expr, type, loc);
@@ -4221,13 +4223,17 @@ namespace Mono.CSharp {
 					//
 					// Check if both can convert implicitly to each other's type
 					//
-					if (Convert.ImplicitConversion (ec, false_expr, true_type, loc) != null) {
-						ec.Report.Error (172, true_expr.Location,
-							"Type of conditional expression cannot be determined as `{0}' and `{1}' convert implicitly to each other",
-							TypeManager.CSharpName (true_type), TypeManager.CSharpName (false_type));
-						return null;
+					if (true_type != InternalType.Dynamic) {
+						type = false_type;
+
+						if (false_type != InternalType.Dynamic && Convert.ImplicitConversion (ec, false_expr, true_type, loc) != null) {
+							ec.Report.Error (172, true_expr.Location,
+								"Type of conditional expression cannot be determined as `{0}' and `{1}' convert implicitly to each other",
+								TypeManager.CSharpName (true_type), TypeManager.CSharpName (false_type));
+							return null;
+						}
 					}
-					type = false_type;
+
 					true_expr = conv;
 				} else if ((conv = Convert.ImplicitConversion (ec, false_expr, true_type, loc)) != null) {
 					false_expr = conv;
@@ -4881,6 +4887,17 @@ namespace Mono.CSharp {
 		}
 		#endregion
 
+		protected override void CloneTo (CloneContext clonectx, Expression t)
+		{
+			Invocation target = (Invocation) t;
+
+			if (arguments != null)
+				target.arguments = arguments.Clone (clonectx);
+
+			target.expr = expr.Clone (clonectx);
+		}
+
+
 		public override Expression CreateExpressionTree (ResolveContext ec)
 		{
 			Expression instance = mg.IsInstance ?
@@ -5029,6 +5046,16 @@ namespace Mono.CSharp {
 			return mg.OverloadResolve (ec, ref arguments, null, OverloadResolver.Restrictions.None);
 		}
 
+		static Type[] GetVarargsTypes (MethodSpec mb, Arguments arguments)
+		{
+			AParametersCollection pd = mb.Parameters;
+
+			Argument a = arguments[pd.Count - 1];
+			Arglist list = (Arglist) a.Expr;
+
+			return list.ArgumentTypes;
+		}
+
 		//
 		// If a member is a method or event, or if it is a constant, field or property of either a delegate type
 		// or the type dynamic, then the member is invocable
@@ -5062,14 +5089,32 @@ namespace Mono.CSharp {
 			return true;
 		}
 
-		static Type[] GetVarargsTypes (MethodSpec mb, Arguments arguments)
+		//
+		// Used to decide whether call or callvirt is needed
+		//
+		static bool IsVirtualCallRequired (Expression instance, MethodSpec method)
 		{
-			AParametersCollection pd = mb.Parameters;
-			
-			Argument a = arguments [pd.Count - 1];
-			Arglist list = (Arglist) a.Expr;
+			//
+			// There are 2 scenarious where we emit callvirt
+			//
+			// Case 1: A method is virtual and it's not used to call base
+			// Case 2: A method instance expression can be null. In this casen callvirt ensures
+			// correct NRE exception when the method is called
+			//
+			var decl_type = method.DeclaringType;
+			if (decl_type.IsStruct || decl_type.IsEnum)
+				return false;
 
-			return list.ArgumentTypes;
+			if (instance is BaseThis)
+				return false;
+
+			//
+			// It's non-virtual and will never be null
+			//
+			if (!method.IsVirtual && (instance is This || instance is New || instance is ArrayCreation || instance is DelegateCreation || instance is TypeOf))
+				return false;
+
+			return true;
 		}
 
 		/// <remarks>
@@ -5105,8 +5150,6 @@ namespace Mono.CSharp {
 		{
 			LocalTemporary this_arg = null;
 
-			TypeSpec decl_type = method.DeclaringType;
-
 			// Speed up the check by not doing it on not allowed targets
 			if (method.ReturnType == TypeManager.void_type && method.IsConditionallyExcluded (loc))
 				return;
@@ -5120,10 +5163,10 @@ namespace Mono.CSharp {
 			} else {
 				iexpr_type = instance_expr.Type;
 
-				if (decl_type.IsStruct || decl_type.IsEnum || (instance_expr is This && !method.IsVirtual) || (instance_expr is BaseThis)) {
-					call_op = OpCodes.Call;
-				} else {
+				if (IsVirtualCallRequired (instance_expr, method)) {
 					call_op = OpCodes.Callvirt;
+				} else {
+					call_op = OpCodes.Call;
 				}
 
 				//
@@ -5135,8 +5178,8 @@ namespace Mono.CSharp {
 					//
 					// Push the instance expression
 					//
-					if ((iexpr_type.IsStruct && (call_op == OpCodes.Callvirt || (call_op == OpCodes.Call && decl_type == iexpr_type))) ||
-						iexpr_type.IsGenericParameter || TypeManager.IsNullableType (decl_type)) {
+					if ((iexpr_type.IsStruct && (call_op == OpCodes.Callvirt || (call_op == OpCodes.Call && method.DeclaringType == iexpr_type))) ||
+						iexpr_type.IsGenericParameter || TypeManager.IsNullableType (method.DeclaringType)) {
 						//
 						// If the expression implements IMemoryLocation, then
 						// we can optimize and use AddressOf on the
@@ -5211,16 +5254,6 @@ namespace Mono.CSharp {
 			//
 			if (type != TypeManager.void_type)
 				ec.Emit (OpCodes.Pop);
-		}
-
-		protected override void CloneTo (CloneContext clonectx, Expression t)
-		{
-			Invocation target = (Invocation) t;
-
-			if (arguments != null)
-				target.arguments = arguments.Clone (clonectx);
-
-			target.expr = expr.Clone (clonectx);
 		}
 
 		public override SLE.Expression MakeExpression (BuilderContext ctx)
@@ -6247,9 +6280,10 @@ namespace Mono.CSharp {
 				return;
 
 			// Emit static initializer for arrays which have contain more than 2 items and
-			// the static initializer will initialize at least 25% of array values.
+			// the static initializer will initialize at least 25% of array values or there
+			// is more than 10 items to be initialized
 			// NOTE: const_initializers_count does not contain default constant values.
-			if (const_initializers_count > 2 && const_initializers_count * 4 > (array_data.Count) &&
+			if (const_initializers_count > 2 && (array_data.Count > 10 || const_initializers_count * 4 > (array_data.Count)) &&
 				(TypeManager.IsPrimitiveType (array_element_type) || TypeManager.IsEnumType (array_element_type))) {
 				EmitStaticInitializers (ec);
 
@@ -6325,6 +6359,8 @@ namespace Mono.CSharp {
 	//
 	class ImplicitlyTypedArrayCreation : ArrayCreation
 	{
+		TypeInferenceContext best_type_inference;
+
 		public ImplicitlyTypedArrayCreation (ComposedTypeSpecifier rank, ArrayInitializer initializers, Location loc)
 			: base (null, rank, initializers, loc)
 		{			
@@ -6342,14 +6378,19 @@ namespace Mono.CSharp {
 
 			dimensions = rank.Dimension;
 
+			best_type_inference = new TypeInferenceContext ();
+
 			if (!ResolveInitializers (ec))
 				return null;
 
-			if (array_element_type == null || array_element_type == InternalType.Null ||
-				array_element_type == TypeManager.void_type || array_element_type == InternalType.AnonymousMethod ||
-				array_element_type == InternalType.MethodGroup ||
+			best_type_inference.FixAllTypes (ec);
+			array_element_type = best_type_inference.InferredTypeArguments[0];
+			best_type_inference = null;
+
+			if (array_element_type == null || array_element_type == InternalType.MethodGroup || array_element_type == InternalType.AnonymousMethod ||
 				arguments.Count != rank.Dimension) {
-				Error_NoBestType (ec);
+				ec.Report.Error (826, loc,
+					"The type of an implicitly typed array cannot be inferred from the initializer. Try specifying array type explicitly");
 				return null;
 			}
 
@@ -6365,19 +6406,13 @@ namespace Mono.CSharp {
 			return this;
 		}
 
-		void Error_NoBestType (ResolveContext ec)
-		{
-			ec.Report.Error (826, loc,
-				"The type of an implicitly typed array cannot be inferred from the initializer. Try specifying array type explicitly");
-		}
-
 		//
 		// Converts static initializer only
 		//
 		void UnifyInitializerElement (ResolveContext ec)
 		{
 			for (int i = 0; i < array_data.Count; ++i) {
-				Expression e = (Expression)array_data[i];
+				Expression e = array_data[i];
 				if (e != null)
 					array_data [i] = Convert.ImplicitConversion (ec, e, array_element_type, Location.Null);
 			}
@@ -6386,27 +6421,10 @@ namespace Mono.CSharp {
 		protected override Expression ResolveArrayElement (ResolveContext ec, Expression element)
 		{
 			element = element.Resolve (ec);
-			if (element == null)
-				return null;
-			
-			if (array_element_type == null) {
-				if (element.Type != InternalType.Null)
-					array_element_type = element.Type;
+			if (element != null)
+				best_type_inference.AddCommonTypeBound (element.Type);
 
-				return element;
-			}
-
-			if (Convert.ImplicitConversionExists (ec, element, array_element_type)) {
-				return element;
-			}
-
-			if (Convert.ImplicitConversionExists (ec, new TypeExpression (array_element_type, loc), element.Type)) {
-				array_element_type = element.Type;
-				return element;
-			}
-
-			Error_NoBestType (ec);
-			return null;
+			return element;
 		}
 	}	
 	
@@ -6792,6 +6810,7 @@ namespace Mono.CSharp {
 			}
 
 			type = TypeManager.type_type;
+			QueriedType = texpr;
 
 			return DoResolveBase ();
 		}
@@ -6852,15 +6871,22 @@ namespace Mono.CSharp {
 			if (targetType != type)
 				enc.Encode (type);
 
-			if (ContainsTypeParameter (typearg)) {
-				rc.Compiler.Report.Error (416, loc, "`{0}': an attribute argument cannot use type parameters",
-					typearg.GetSignatureForError ());
-				return;
-			}
+			if (!(QueriedType is GenericOpenTypeExpr)) {
+				var gt = typearg;
+				while (gt != null) {
+					if (ContainsTypeParameter (gt)) {
+						rc.Compiler.Report.Error (416, loc, "`{0}': an attribute argument cannot use type parameters",
+							typearg.GetSignatureForError ());
+						return;
+					}
 
-			if (ContainsDynamicType (typearg)) {
-				Attribute.Error_AttributeArgumentIsDynamic (rc, loc);
-				return;
+					gt = gt.DeclaringType;
+				}
+
+				if (ContainsDynamicType (typearg)) {
+					Attribute.Error_AttributeArgumentIsDynamic (rc, loc);
+					return;
+				}
 			}
 
 			enc.EncodeTypeName (typearg);
@@ -7261,10 +7287,16 @@ namespace Mono.CSharp {
 			if (e == null)
 				return null;
 
-			if (right_side != null)
+			if (right_side != null) {
+				if (e is TypeExpr) {
+					e.Error_UnexpectedKind (rc, ResolveFlags.VariableOrValue, loc);
+					return null;
+				}
+
 				e = e.ResolveLValue (rc, right_side);
-			else
+			} else {
 				e = e.Resolve (rc, ResolveFlags.VariableOrValue | ResolveFlags.Type);
+			}
 
 			return e;
 		}
@@ -7317,8 +7349,13 @@ namespace Mono.CSharp {
 				return retval;
 			}
 
+			MemberExpr me;
 			TypeSpec expr_type = expr.Type;
 			if (expr_type == InternalType.Dynamic) {
+				me = expr as MemberExpr;
+				if (me != null)
+					me.ResolveInstanceExpression (rc);
+
 				Arguments args = new Arguments (1);
 				args.Add (new Argument (expr));
 				return new DynamicMemberBinder (Name, args, loc);
@@ -7328,7 +7365,10 @@ namespace Mono.CSharp {
 				MemberKind.Interface | MemberKind.TypeParameter | MemberKind.ArrayType;
 
 			if ((expr_type.Kind & dot_kinds) == 0 || expr_type == TypeManager.void_type) {
-				Unary.Error_OperatorCannotBeApplied (rc, loc, ".", expr_type);
+				if (expr_type == InternalType.Null && rc.Compiler.IsRuntimeBinder)
+					rc.Report.Error (Report.RuntimeErrorId, loc, "Cannot perform member binding on `null' value");
+				else
+					Unary.Error_OperatorCannotBeApplied (rc, loc, ".", expr_type);
 				return null;
 			}
 
@@ -7388,9 +7428,7 @@ namespace Mono.CSharp {
 				errorMode = true;
 			}
 
-			MemberExpr me;
 			TypeExpr texpr = member_lookup as TypeExpr;
-
 			if (texpr != null) {
 				if (!(expr is TypeExpr)) {
 					me = expr as MemberExpr;
@@ -7490,8 +7528,12 @@ namespace Mono.CSharp {
 			}
 			
 			TypeExpr texpr;
-			if (HasTypeArguments) {
-				texpr = new GenericTypeExpr (nested, targs, loc);
+			if (Arity > 0) {
+				if (HasTypeArguments) {
+					texpr = new GenericTypeExpr (nested, targs, loc);
+				} else {
+					texpr = new GenericOpenTypeExpr (nested, loc);
+				}
 			} else {
 				texpr = new TypeExpression (nested, loc);
 			}
@@ -8124,7 +8166,10 @@ namespace Mono.CSharp {
 					return null;
 			}
 
-			if (dynamic || type == InternalType.Dynamic) {
+			//
+			// It has dynamic arguments
+			//
+			if (dynamic) {
 				Arguments args = new Arguments (arguments.Count + 1);
 				if (IsBase) {
 					rc.Report.Error (1972, loc,
@@ -8261,6 +8306,7 @@ namespace Mono.CSharp {
 		public static readonly EmptyExpression UnaryAddress = new EmptyExpression ();
 		public static readonly EmptyExpression EventAddition = new EmptyExpression ();
 		public static readonly EmptyExpression EventSubtraction = new EmptyExpression ();
+		public static readonly EmptyExpression MissingValue = new EmptyExpression (InternalType.FakeInternalType);
 
 		static EmptyExpression temp = new EmptyExpression ();
 		public static EmptyExpression Grab ()
@@ -8514,8 +8560,10 @@ namespace Mono.CSharp {
 					UnsafeError (ec.Compiler.Report, loc);
 				}
 
-				type = PointerContainer.MakeType (type);
-				single_spec = single_spec.Next;
+				do {
+					type = PointerContainer.MakeType (type);
+					single_spec = single_spec.Next;
+				} while (single_spec != null && single_spec.IsPointer);
 			}
 
 			if (single_spec != null && single_spec.Dimension > 0) {

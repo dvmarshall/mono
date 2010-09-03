@@ -1739,6 +1739,9 @@ mono_cleanup (void)
 {
 	mono_close_exe_image ();
 
+	mono_defaults.corlib = NULL;
+
+	mono_config_cleanup ();
 	mono_loader_cleanup ();
 	mono_classes_cleanup ();
 	mono_assemblies_cleanup ();

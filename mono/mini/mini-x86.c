@@ -20,6 +20,7 @@
 #include <mono/metadata/threads.h>
 #include <mono/metadata/profiler-private.h>
 #include <mono/metadata/mono-debug.h>
+#include <mono/metadata/gc-internal.h>
 #include <mono/utils/mono-math.h>
 #include <mono/utils/mono-counters.h>
 #include <mono/utils/mono-mmap.h>
@@ -599,14 +600,16 @@ get_call_info (MonoGenericSharingContext *gsctx, MonoMemPool *mp, MonoMethodSign
 int
 mono_arch_get_argument_info (MonoMethodSignature *csig, int param_count, MonoJitArgumentInfo *arg_info)
 {
-	int k, args_size = 0;
+	int len, k, args_size = 0;
 	int size, pad;
 	guint32 align;
 	int offset = 8;
 	CallInfo *cinfo;
 
 	/* Avoid g_malloc as it is not signal safe */
-	cinfo = (CallInfo*)g_newa (guint8*, sizeof (CallInfo) + (sizeof (ArgInfo) * (csig->param_count + 1)));
+	len = sizeof (CallInfo) + (sizeof (ArgInfo) * (csig->param_count + 1));
+	cinfo = (CallInfo*)g_newa (guint8*, len);
+	memset (cinfo, 0, len);
 
 	cinfo = get_call_info_internal (NULL, cinfo, csig, FALSE);
 
@@ -2350,6 +2353,9 @@ mono_arch_output_basic_block (MonoCompile *cfg, MonoBasicBlock *bb)
 
 	mono_debug_open_block (cfg, bb, offset);
 
+    if (mono_break_at_bb_method && mono_method_desc_full_match (mono_break_at_bb_method, cfg->method) && bb->block_num == mono_break_at_bb_bb_num)
+		x86_breakpoint (code);
+
 	MONO_BB_FOR_EACH_INS (bb, ins) {
 		offset = code - cfg->native_code;
 
@@ -3988,17 +3994,59 @@ mono_arch_output_basic_block (MonoCompile *cfg, MonoBasicBlock *bb)
 			break;
 		}
 		case OP_ATOMIC_CAS_I4: {
+			g_assert (ins->dreg == X86_EAX);
 			g_assert (ins->sreg3 == X86_EAX);
 			g_assert (ins->sreg1 != X86_EAX);
 			g_assert (ins->sreg1 != ins->sreg2);
 
 			x86_prefix (code, X86_LOCK_PREFIX);
 			x86_cmpxchg_membase_reg (code, ins->sreg1, ins->inst_offset, ins->sreg2);
-
-			if (ins->dreg != X86_EAX)
-				x86_mov_reg_reg (code, ins->dreg, X86_EAX, 4);
 			break;
 		}
+#ifdef HAVE_SGEN_GC
+		case OP_CARD_TABLE_WBARRIER: {
+			int ptr = ins->sreg1;
+			int value = ins->sreg2;
+			guchar *br;
+			int nursery_shift, card_table_shift;
+			gpointer card_table_mask;
+			size_t nursery_size;
+			gulong card_table = (gulong)mono_gc_get_card_table (&card_table_shift, &card_table_mask);
+			gulong nursery_start = (gulong)mono_gc_get_nursery (&nursery_shift, &nursery_size);
+
+			/*
+			 * We need one register we can clobber, we choose EDX and make sreg1
+			 * fixed EAX to work around limitations in the local register allocator.
+			 * sreg2 might get allocated to EDX, but that is not a problem since
+			 * we use it before clobbering EDX.
+			 */
+			g_assert (ins->sreg1 == X86_EAX);
+
+			/*
+			 * This is the code we produce:
+			 *
+			 *   edx = value
+			 *   edx >>= nursery_shift
+			 *   cmp edx, (nursery_start >> nursery_shift)
+			 *   jne done
+			 *   edx = ptr
+			 *   edx >>= card_table_shift
+			 *   card_table[edx] = 1
+			 * done:
+			 */
+
+			if (value != X86_EDX)
+				x86_mov_reg_reg (code, X86_EDX, value, 4);
+			x86_shift_reg_imm (code, X86_SHR, X86_EDX, nursery_shift);
+			x86_alu_reg_imm (code, X86_CMP, X86_EDX, nursery_start >> nursery_shift);
+			br = code; x86_branch8 (code, X86_CC_NE, -1, FALSE);
+			x86_mov_reg_reg (code, X86_EDX, ptr, 4);
+			x86_shift_reg_imm (code, X86_SHR, X86_EDX, card_table_shift);
+			x86_mov_membase_imm (code, X86_EDX, card_table, 1, 1);
+			x86_patch (br, code);
+			break;
+		}
+#endif
 #ifdef MONO_ARCH_SIMD_INTRINSICS
 		case OP_ADDPS:
 			x86_sse_alu_ps_reg_reg (code, X86_SSE_ADD, ins->sreg1, ins->sreg2);

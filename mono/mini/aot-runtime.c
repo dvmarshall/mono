@@ -165,6 +165,8 @@ static guint32 n_pagefaults = 0;
 static gsize aot_code_low_addr = (gssize)-1;
 static gsize aot_code_high_addr = 0;
 
+static GHashTable *aot_jit_icall_hash;
+
 static void
 init_plt (MonoAotModule *info);
 
@@ -1056,10 +1058,12 @@ load_aot_module (MonoAssembly *assembly, gpointer user_data)
 		usable = FALSE;
 	}
 
+	/* This is no longer needed, LLVM and non-LLVM runtimes should be compatible.
 	if ((((MonoAotFileInfo*)file_info)->flags & MONO_AOT_FILE_FLAG_WITH_LLVM) && !mono_use_llvm) {
 		mono_trace (G_LOG_LEVEL_INFO, MONO_TRACE_AOT, "AOT module %s is compiled with LLVM.\n", aot_name);
 		usable = FALSE;
 	}
+	*/
 
 	find_symbol (sofile, globals, "blob", (gpointer*)&blob);
 
@@ -1210,6 +1214,17 @@ load_aot_module (MonoAssembly *assembly, gpointer user_data)
 		}
 	}
 
+#ifdef HAVE_SGEN_GC
+	{
+		MonoJumpInfo ji;
+
+		memset (&ji, 0, sizeof (ji));
+		ji.type = MONO_PATCH_INFO_GC_CARD_TABLE_ADDR;
+
+		amodule->got [2] = mono_resolve_patch_target (NULL, mono_get_root_domain (), NULL, &ji, FALSE);
+	}
+#endif
+
 	/*
 	 * Since we store methoddef and classdef tokens when referring to methods/classes in
 	 * referenced assemblies, we depend on the exact versions of the referenced assemblies.
@@ -1288,6 +1303,15 @@ mono_aot_init (void)
 		mono_last_aot_method = atoi (g_getenv ("MONO_LASTAOT"));
 	if (g_getenv ("MONO_AOT_CACHE"))
 		use_aot_cache = TRUE;
+}
+
+void
+mono_aot_cleanup (void)
+{
+	if (aot_jit_icall_hash)
+		g_hash_table_destroy (aot_jit_icall_hash);
+	if (aot_modules)
+		g_hash_table_destroy (aot_modules);
 }
 
 static gboolean
@@ -2263,6 +2287,7 @@ decode_patch (MonoAotModule *aot_module, MonoMemPool *mp, MonoJumpInfo *ji, guin
 	case MONO_PATCH_INFO_GENERIC_CLASS_INIT:
 	case MONO_PATCH_INFO_MONITOR_ENTER:
 	case MONO_PATCH_INFO_MONITOR_EXIT:
+	case MONO_PATCH_INFO_GC_CARD_TABLE_ADDR:
 		break;
 	case MONO_PATCH_INFO_RGCTX_FETCH: {
 		gboolean res;
@@ -3124,8 +3149,6 @@ mono_create_ftnptr_malloc (guint8 *code)
 	return code;
 #endif
 }
-
-static GHashTable *aot_jit_icall_hash;
 
 /*
  * mono_aot_register_jit_icall:

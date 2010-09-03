@@ -894,7 +894,7 @@ namespace Mono.CSharp {
 		// compile the same code using different type values for the same
 		// arguments to find the correct overload
 		//
-		public Expression Clone (CloneContext clonectx)
+		public virtual Expression Clone (CloneContext clonectx)
 		{
 			Expression cloned = (Expression) MemberwiseClone ();
 			CloneTo (clonectx, cloned);
@@ -2365,7 +2365,7 @@ namespace Mono.CSharp {
 				errorMode = true;
 			}
 		}
-
+		
 		Expression SimpleNameResolve (ResolveContext ec, Expression right_side, bool intermediate)
 		{
 			Expression e = LookupNameExpression (ec, right_side == null, false);
@@ -2373,10 +2373,16 @@ namespace Mono.CSharp {
 			if (e == null)
 				return null;
 
-			if (right_side != null)
+			if (right_side != null) {
+				if (e is TypeExpr) {
+				    e.Error_UnexpectedKind (ec, ResolveFlags.VariableOrValue, loc);
+				    return null;
+				}
+
 				e = e.ResolveLValue (ec, right_side);
-			else
+			} else {
 				e = e.Resolve (ec);
+			}
 
 			//if (ec.CurrentBlock == null || ec.CurrentBlock.CheckInvariantMeaningInBlock (Name, e, Location))
 			return e;
@@ -3015,7 +3021,7 @@ namespace Mono.CSharp {
 			//
 			// LAMESPEC: No details about which expressions are not allowed
 			//
-			return !(expr is BaseThis);
+			return !(expr is TypeExpr) && !(expr is BaseThis);
 		}
 
 		/// <summary>
@@ -3073,11 +3079,6 @@ namespace Mono.CSharp {
 				ResolveInstanceExpression (ec);
 				if (InstanceExpression != null)
 					CheckProtectedMemberAccess (ec, best_candidate);
-
-				if (best_candidate.IsGeneric) {
-					ConstraintChecker.CheckAll (ec.MemberContext, best_candidate.GetGenericMethodDefinition (), best_candidate.TypeArguments,
-						best_candidate.Constraints, loc);
-				}
 			}
 
 			best_candidate = CandidateToBaseOverride (ec, best_candidate);
@@ -3136,7 +3137,7 @@ namespace Mono.CSharp {
 			None = 0,
 			DelegateInvoke = 1,
 			ProbingOnly	= 1 << 1,
-			Covariant = 1 << 2,
+			CovariantDelegate = 1 << 2,
 			NoBaseMembers = 1 << 3
 		}
 
@@ -3533,6 +3534,7 @@ namespace Mono.CSharp {
 			AParametersCollection pd = ((IParametersMember) candidate).Parameters;
 			int param_count = pd.Count;
 			int optional_count = 0;
+			int score;
 
 			if (arg_count != param_count) {
 				for (int i = 0; i < pd.Count; ++i) {
@@ -3562,22 +3564,19 @@ namespace Mono.CSharp {
 						return int.MaxValue - 10000 + args_gap;
 				}
 
-				// Initialize expanded form of a method with 1 params parameter
-				params_expanded_form = param_count == 1 && pd.HasParams;
-
 				// Resize to fit optional arguments
 				if (optional_count != 0) {
-					Arguments resized;
 					if (arguments == null) {
-						resized = new Arguments (optional_count);
+						arguments = new Arguments (optional_count);
 					} else {
-						resized = new Arguments (param_count);
+						// Have to create a new container, so the next run can do same
+						var resized = new Arguments (param_count);
 						resized.AddRange (arguments);
+						arguments = resized;
 					}
 
 					for (int i = arg_count; i < param_count; ++i)
-						resized.Add (null);
-					arguments = resized;
+						arguments.Add (null);
 				}
 			}
 
@@ -3598,19 +3597,31 @@ namespace Mono.CSharp {
 							int index = pd.GetParameterIndexByName (na.Name);
 
 							// Named parameter not found or already reordered
-							if (index <= i)
+							if (index == i || index < 0)
 								break;
 
-							// When using parameters which should not be available to the user
-							if (index >= param_count)
-								break;
+							Argument temp;
+							if (index >= param_count) {
+								// When using parameters which should not be available to the user
+								if ((pd.FixedParameters[index].ModFlags & Parameter.Modifier.PARAMS) == 0)
+									break;
+
+								arguments.Add (null);
+								++arg_count;
+								temp = null;
+							} else {
+								temp = arguments[index];
+
+								// The slot has been taken by positional argument
+								if (temp != null && !(temp is NamedArgument))
+									break;
+							}
 
 							if (!arg_moved) {
 								arguments.MarkReorderedArgument (na);
 								arg_moved = true;
 							}
 
-							Argument temp = arguments[index];
 							arguments[index] = arguments[i];
 							arguments[i] = temp;
 
@@ -3645,7 +3656,7 @@ namespace Mono.CSharp {
 						prev_recorder = ec.Report.SetPrinter (lambda_conv_msgs);
 					}
 
-					int score = TypeManager.InferTypeArguments (ec, arguments, ref ms);
+					score = TypeManager.InferTypeArguments (ec, arguments, ref ms);
 					lambda_conv_msgs.EndSession ();
 
 					if (score != 0)
@@ -3654,6 +3665,13 @@ namespace Mono.CSharp {
 					candidate = ms;
 					pd = ms.Parameters;
 				}
+
+				//
+				// Type arguments constraints have to match
+				//
+				if (!ConstraintChecker.CheckAll (null, ms.GetGenericMethodDefinition (), ms.TypeArguments, ms.Constraints, loc))
+					return int.MaxValue - 25000;
+
 			} else {
 				if (type_arguments != null)
 					return int.MaxValue - 15000;
@@ -3670,31 +3688,51 @@ namespace Mono.CSharp {
 					if (!pd.FixedParameters[i].HasDefaultValue)
 						throw new InternalErrorException ();
 
-					Expression e = pd.FixedParameters[i].DefaultValue as Constant;
-					if (e == null)
-						e = new DefaultValueExpression (new TypeExpression (pd.Types[i], loc), loc).Resolve (ec);
+					//
+					// Get the default value expression, we can use the same expression
+					// if the type matches
+					//
+					Expression e = pd.FixedParameters[i].DefaultValue;
+					if (!(e is Constant) || e.Type.IsGenericOrParentIsGeneric) {
+						//
+						// LAMESPEC: No idea what the exact rules are for System.Reflection.Missing.Value instead of null
+						//
+						if (e == EmptyExpression.MissingValue && pd.Types[i] == TypeManager.object_type) {
+							e = new MemberAccess (new MemberAccess (new MemberAccess (
+								new QualifiedAliasMember (QualifiedAliasMember.GlobalAlias, "System", loc), "Reflection", loc), "Missing", loc), "Value", loc);
+						} else {
+							e = new DefaultValueExpression (new TypeExpression (pd.Types[i], loc), loc);
+						}
+
+						e = e.Resolve (ec);
+					}
 
 					arguments[i] = new Argument (e, Argument.AType.Default);
 					continue;
 				}
 
 				if (p_mod != Parameter.Modifier.PARAMS) {
-					p_mod = pd.FixedParameters[i].ModFlags & ~(Parameter.Modifier.OUTMASK | Parameter.Modifier.REFMASK);
+					p_mod = pd.FixedParameters[i].ModFlags;
 					pt = pd.Types[i];
-				} else {
+				} else if (!params_expanded_form) {
 					params_expanded_form = true;
+					pt = ((ElementTypeSpec) pt).Element;
+					i -= 2;
+					continue;
 				}
 
-				Parameter.Modifier a_mod = a.Modifier & ~(Parameter.Modifier.OUTMASK | Parameter.Modifier.REFMASK);
-				int score = 1;
+				score = 1;
 				if (!params_expanded_form)
-					score = IsArgumentCompatible (ec, a_mod, a, p_mod & ~Parameter.Modifier.PARAMS, pt);
+					score = IsArgumentCompatible (ec, a, p_mod & ~Parameter.Modifier.PARAMS, pt);
 
 				//
 				// It can be applicable in expanded form (when not doing exact match like for delegates)
 				//
-				if (score != 0 && (p_mod & Parameter.Modifier.PARAMS) != 0 && (restrictions & Restrictions.Covariant) == 0) {
-					score = IsArgumentCompatible (ec, a_mod, a, 0, TypeManager.GetElementType (pt));
+				if (score != 0 && (p_mod & Parameter.Modifier.PARAMS) != 0 && (restrictions & Restrictions.CovariantDelegate) == 0) {
+					if (!params_expanded_form)
+						pt = ((ElementTypeSpec) pt).Element;
+
+					score = IsArgumentCompatible (ec, a, Parameter.Modifier.NONE, pt);
 					if (score == 0)
 						params_expanded_form = true;
 				}
@@ -3706,20 +3744,34 @@ namespace Mono.CSharp {
 				}
 			}
 
-			if (arg_count != pd.Count)
+			//
+			// When params parameter has notargument, will be provided later if the method is the best candidate
+			//
+			if (arg_count + 1 == pd.Count && (pd.FixedParameters [arg_count].ModFlags & Parameter.Modifier.PARAMS) != 0)
 				params_expanded_form = true;
 
 			return 0;
 		}
 
-		int IsArgumentCompatible (ResolveContext ec, Parameter.Modifier arg_mod, Argument argument, Parameter.Modifier param_mod, TypeSpec parameter)
+		int IsArgumentCompatible (ResolveContext ec, Argument argument, Parameter.Modifier param_mod, TypeSpec parameter)
 		{
 			//
-			// Types have to be identical when ref or out modifer is used 
+			// Types have to be identical when ref or out modifer
+			// is used and argument is not of dynamic type
 			//
-			if ((arg_mod | param_mod) != 0) {
-				if (argument.Type != parameter && !TypeSpecComparer.IsEqual (argument.Type, parameter)) {
-					return 2;
+			if ((argument.Modifier | param_mod) != 0) {
+				//
+				// Defer to dynamic binder
+				//
+				if (argument.Type == InternalType.Dynamic)
+					return 0;
+
+				if (argument.Type != parameter) {
+					//
+					// Do full equality check after quick path
+					//
+					if (!TypeSpecComparer.IsEqual (argument.Type, parameter))
+						return 2;
 				}
 			} else {
 				//
@@ -3740,14 +3792,11 @@ namespace Mono.CSharp {
 						lambda_conv_msgs.EndSession ();
 					}
 
-					if (argument.Type == InternalType.Dynamic)
-						return 0;
-
 					return 2;
 				}
 			}
 
-			if (arg_mod != param_mod)
+			if (argument.Modifier != param_mod)
 				return 1;
 
 			return 0;
@@ -3920,8 +3969,8 @@ namespace Mono.CSharp {
 				return null;
 			}
 
-			// TODO: quite slow
-			if (args_count != 0 && args.HasDynamic) {
+			// TODO: HasDynamic is quite slow
+			if (args_count != 0 && (restrictions & Restrictions.CovariantDelegate) == 0 && args.HasDynamic) {
 				if (args [0].ArgType == Argument.AType.ExtensionType) {
 					rc.Report.Error (1973, loc,
 						"Type `{0}' does not contain a member `{1}' and the best extension method overload `{2}' cannot be dynamically dispatched. Consider calling the method without the extension method syntax",
@@ -4075,14 +4124,23 @@ namespace Mono.CSharp {
 					}
 
 					var ms = best_candidate as MethodSpec;
-					if (ms != null && ms.IsGeneric && ta_count == 0) {
-						if (custom_errors != null && custom_errors.TypeInferenceFailed (rc, best_candidate))
-							return;
+					if (ms != null && ms.IsGeneric) {
+						bool constr_ok = true;
+						if (ms.TypeArguments != null)
+							constr_ok = ConstraintChecker.CheckAll (rc.MemberContext, ms.GetGenericMethodDefinition (), ms.TypeArguments, ms.Constraints, loc);
 
-						rc.Report.Error (411, loc,
-							"The type arguments for method `{0}' cannot be inferred from the usage. Try specifying the type arguments explicitly",
-							ms.GetGenericMethodDefinition ().GetSignatureForError ());
-						return;
+						if (ta_count == 0) {
+							if (custom_errors != null && custom_errors.TypeInferenceFailed (rc, best_candidate))
+								return;
+
+							if (constr_ok) {
+								rc.Report.Error (411, loc,
+									"The type arguments for method `{0}' cannot be inferred from the usage. Try specifying the type arguments explicitly",
+									ms.GetGenericMethodDefinition ().GetSignatureForError ());
+							}
+
+							return;
+						}
 					}
 
 					VerifyArguments (rc, ref args, best_candidate, params_expanded);
@@ -4182,7 +4240,7 @@ namespace Mono.CSharp {
 				if (a.Expr.Type == InternalType.Dynamic)
 					continue;
 
-				if ((restrictions & Restrictions.Covariant) != 0 && !Delegate.IsTypeCovariant (a.Expr, pt)) {
+				if ((restrictions & Restrictions.CovariantDelegate) != 0 && !Delegate.IsTypeCovariant (a.Expr, pt)) {
 					custom_errors.NoArgumentMatch (ec, member);
 					return false;
 				}
@@ -4236,6 +4294,20 @@ namespace Mono.CSharp {
 
 			if (has_unsafe_arg && !ec.IsUnsafe) {
 				Expression.UnsafeError (ec, loc);
+			}
+
+			//
+			// We could infer inaccesible type arguments
+			//
+			if (type_arguments == null && member.IsGeneric) {
+				var ms = (MethodSpec) member;
+				foreach (var ta in ms.TypeArguments) {
+					if (!ta.IsAccessible (ec.CurrentType)) {
+						ec.Report.SymbolRelatedToPreviousError (ta);
+						Expression.ErrorIsInaccesible (ec, member.GetSignatureForError (), loc);
+						break;
+					}
+				}
 			}
 
 			return true;
@@ -5171,9 +5243,6 @@ namespace Mono.CSharp {
 			if (spec.DeclaringType == ec.CurrentType ||
 			    TypeManager.IsNestedChildOf(ec.CurrentType, spec.DeclaringType)) {
 					
-				// TODO: Breaks dynamic binder as currect context fields are imported and not compiled
-				// EventField mi = spec.MemberDefinition as EventField;
-
 				if (spec.BackingField != null) {
 					spec.MemberDefinition.SetIsUsed ();
 

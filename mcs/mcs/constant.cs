@@ -249,9 +249,15 @@ namespace Mono.CSharp {
 			// do nothing
 		}
 
+		public sealed override Expression Clone (CloneContext clonectx)
+		{
+			// No cloning is not needed for constants
+			return this;
+		}
+
 		protected override void CloneTo (CloneContext clonectx, Expression target)
 		{
-			// CloneTo: Nothing, we do not keep any state on this expression
+			throw new NotSupportedException ("should not be reached");
 		}
 
 		public override System.Linq.Expressions.Expression MakeExpression (BuilderContext ctx)
@@ -281,7 +287,8 @@ namespace Mono.CSharp {
 		}
 	}
 
-	public abstract class IntegralConstant : Constant {
+	public abstract class IntegralConstant : Constant
+	{
 		protected IntegralConstant (Location loc) :
 			base (loc)
 		{
@@ -2019,7 +2026,7 @@ namespace Mono.CSharp {
 			}
 
 			// Exlude internal compiler types
-			if (targetType == InternalType.AnonymousMethod)
+			if (targetType.Kind == MemberKind.InternalCompilerType && targetType != InternalType.Dynamic && targetType != InternalType.Null)
 				return null;
 
 			if (!IsLiteral && !Convert.ImplicitStandardConversionExists (this, targetType))

@@ -25,7 +25,7 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
-using System.Net.NetworkInformation;
+using System.Net.Sockets;
 using System.ServiceModel;
 using System.ServiceModel.Channels;
 using System.ServiceModel.Description;
@@ -39,7 +39,7 @@ namespace System.ServiceModel.Discovery
 		public static readonly Uri DefaultIPv6MulticastAddress = new Uri ("soap.udp://[FF02:0000:0000:0000:0000:0000:0000:000C]:3702/");
 
 		internal static Uri DefaultMulticastAddress {
-			get { return IPGlobalProperties.GetIPGlobalProperties ().GetIPv4GlobalStatistics ().NumberOfInterfaces == 0 ? DefaultIPv6MulticastAddress : DefaultIPv4MulticastAddress; }
+			get { return Socket.SupportsIPv4 ? DefaultIPv4MulticastAddress : DefaultIPv6MulticastAddress; }
 		}
 		
 		// (1)->(2)
@@ -74,10 +74,18 @@ namespace System.ServiceModel.Discovery
 
 		// (6), everything falls to here.
 		public UdpDiscoveryEndpoint (DiscoveryVersion discoveryVersion, Uri multicastAddress)
-			: this (discoveryVersion)
+			: base (discoveryVersion, ServiceDiscoveryMode.Adhoc, CreateBinding (), new EndpointAddress (discoveryVersion.AdhocAddress))
 		{
+			ListenUri = multicastAddress;
 			TransportSettings = new UdpTransportSettings ();
 			MulticastAddress = multicastAddress;
+			MaxResponseDelay = TimeSpan.FromMilliseconds (500);
+			Behaviors.Add (new DiscoveryViaUriBehavior (multicastAddress));
+		}
+
+		static Binding CreateBinding ()
+		{
+			return new CustomBinding (new TextMessageEncodingBindingElement (), new UdpTransportBindingElement ()) { SendTimeout = TimeSpan.FromMinutes (1), ReceiveTimeout = TimeSpan.FromMinutes (10) };
 		}
 
 		public Uri MulticastAddress { get; set; }

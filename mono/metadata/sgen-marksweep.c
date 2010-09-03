@@ -42,6 +42,7 @@
 #define MS_BLOCK_SIZE	(16*1024)
 #define MS_BLOCK_SIZE_SHIFT	14
 #define MAJOR_SECTION_SIZE	MS_BLOCK_SIZE
+#define CARDS_PER_BLOCK (MS_BLOCK_SIZE / CARD_SIZE_IN_BYTES)
 
 #ifdef FIXED_HEAP
 #define MS_DEFAULT_HEAP_NUM_BLOCKS	(32 * 1024) /* 512 MB */
@@ -292,7 +293,7 @@ ms_get_empty_block (void)
 
 	block->used = TRUE;
 
-	mono_sgen_update_heap_boundaries ((mword)block, (mword)block + MS_BLOCK_SIZE);
+	mono_sgen_update_heap_boundaries ((mword)block->block, (mword)block->block + MS_BLOCK_SIZE);
 
 	return block;
 }
@@ -1235,6 +1236,55 @@ major_print_gc_param_usage (void)
 }
 #endif
 
+#ifdef SGEN_HAVE_CARDTABLE
+static void
+major_iterate_live_block_ranges (sgen_cardtable_block_callback callback)
+{
+	MSBlockInfo *block;
+
+	FOREACH_BLOCK (block) {
+		if (block->has_references)
+			callback ((mword)block->block, MS_BLOCK_SIZE);
+	} END_FOREACH_BLOCK;
+}
+
+static void
+major_scan_card_table (SgenGrayQueue *queue)
+{
+	MSBlockInfo *block;
+
+	FOREACH_BLOCK (block) {
+		int i;
+		int block_obj_size = block->obj_size;
+		char *start = block->block;
+
+		if (!block->has_references)
+			continue;
+
+		for (i = 0; i < CARDS_PER_BLOCK; ++i, start += CARD_SIZE_IN_BYTES) {
+			int index;
+			char *obj, *end;
+
+			if (!sgen_card_table_card_begin_scanning ((mword)start))
+				continue;
+
+			end = start + CARD_SIZE_IN_BYTES;
+			if (i == 0)
+				index = 0;
+			else
+				index = MS_BLOCK_OBJ_INDEX (start, block);
+
+			obj = (char*)MS_BLOCK_OBJ (block, index);
+			while (obj < end) {
+				if (MS_OBJ_ALLOCED (obj, block))
+					minor_scan_object (obj, queue);
+				obj += block_obj_size;
+			}
+		}
+	} END_FOREACH_BLOCK;
+}
+#endif
+
 void
 #ifdef SGEN_PARALLEL_MARK
 #ifdef FIXED_HEAP
@@ -1289,6 +1339,7 @@ mono_sgen_marksweep_init
 #else
 	collector->is_parallel = FALSE;
 #endif
+	collector->supports_cardtable = !collector->is_parallel;
 
 	collector->alloc_heap = major_alloc_heap;
 	collector->is_object_live = major_is_object_live;
@@ -1301,6 +1352,10 @@ mono_sgen_marksweep_init
 	collector->free_non_pinned_object = major_free_non_pinned_object;
 	collector->find_pin_queue_start_ends = major_find_pin_queue_start_ends;
 	collector->pin_objects = major_pin_objects;
+#ifdef SGEN_HAVE_CARDTABLE
+	collector->scan_card_table = major_scan_card_table;
+	collector->iterate_live_block_ranges = major_iterate_live_block_ranges;
+#endif
 	collector->init_to_space = major_init_to_space;
 	collector->sweep = major_sweep;
 	collector->check_scan_starts = major_check_scan_starts;

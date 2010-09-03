@@ -116,11 +116,6 @@ gboolean mono_do_signal_chaining;
 static gboolean	mono_using_xdebug;
 static int mini_verbose = 0;
 
-/* Statistics */
-#ifdef ENABLE_LLVM
-static int methods_with_llvm, methods_without_llvm;
-#endif
-
 /*
  * This flag controls whenever the runtime uses LLVM for JIT compilation, and whenever
  * it can load AOT code compiled by LLVM.
@@ -502,9 +497,15 @@ mono_tramp_info_create (const char *name, guint8 *code, guint32 code_size, MonoJ
 void
 mono_tramp_info_free (MonoTrampInfo *info)
 {
+	GSList *l;
+
 	g_free (info->name);
 
-	// FIXME: ji + unwind_ops
+	// FIXME: ji
+	for (l = info->unwind_ops; l; l = l->next)
+		g_free (l->data);
+	g_slist_free (info->unwind_ops);
+	g_free (info);
 }
 
 #define MONO_INIT_VARINFO(vi,id) do { \
@@ -3020,6 +3021,15 @@ mono_resolve_patch_target (MonoMethod *method, MonoDomain *domain, guint8 *code,
 		g_assert_not_reached ();
 #endif
 		break;
+#ifdef HAVE_SGEN_GC
+	case MONO_PATCH_INFO_GC_CARD_TABLE_ADDR: {
+		int card_table_shift_bits;
+		gpointer card_table_mask;
+
+		target = mono_gc_get_card_table (&card_table_shift_bits, &card_table_mask);
+		break;
+	}
+#endif
 	default:
 		g_assert_not_reached ();
 	}
@@ -3665,6 +3675,16 @@ create_jit_info (MonoCompile *cfg, MonoMethod *method_to_compile)
 			g_assert (tblock->native_offset);
 			tblock = cfg->cil_offset_to_bb [ec->try_offset + ec->try_len];
 			g_assert (tblock);
+			if (!tblock->native_offset) {
+				int j, end;
+				for (j = ec->try_offset + ec->try_len, end = ec->try_offset; j >= end; --j) {
+					MonoBasicBlock *bb = cfg->cil_offset_to_bb [j];
+					if (bb && bb->native_offset) {
+						tblock = bb;
+						break;
+					}
+				}
+			}
 			ei->try_end = cfg->native_code + tblock->native_offset;
 			g_assert (tblock->native_offset);
 			tblock = cfg->cil_offset_to_bb [ec->handler_offset];
@@ -3930,8 +3950,6 @@ mini_method_compile (MonoMethod *method, guint32 opts, MonoDomain *domain, gbool
 		static gboolean inited;
 
 		if (!inited) {
-			mono_counters_register ("Methods JITted using LLVM", MONO_COUNTER_JIT | MONO_COUNTER_INT, &methods_with_llvm);	
-			mono_counters_register ("Methods JITted using mono JIT", MONO_COUNTER_JIT | MONO_COUNTER_INT, &methods_without_llvm);
 			inited = TRUE;
 		}
 
@@ -3947,7 +3965,6 @@ mini_method_compile (MonoMethod *method, guint32 opts, MonoDomain *domain, gbool
 					printf ("LLVM failed for '%s': %s\n", method->name, cfg->exception_message);
 					//g_free (nm);
 				}
-				InterlockedIncrement (&methods_without_llvm);
 				mono_destroy_compile (cfg);
 				try_llvm = FALSE;
 				goto restart_compile;
@@ -4523,13 +4540,10 @@ mini_method_compile (MonoMethod *method, guint32 opts, MonoDomain *domain, gbool
 				printf ("LLVM failed for '%s': %s\n", method->name, cfg->exception_message);
 				//g_free (nm);
 			}
-			InterlockedIncrement (&methods_without_llvm);
 			mono_destroy_compile (cfg);
 			try_llvm = FALSE;
 			goto restart_compile;
 		}
-
-		InterlockedIncrement (&methods_with_llvm);
 
 		if (cfg->verbose_level > 0 && !cfg->compile_aot) {
 			nm = mono_method_full_name (cfg->method, TRUE);
@@ -4542,6 +4556,11 @@ mini_method_compile (MonoMethod *method, guint32 opts, MonoDomain *domain, gbool
 	} else {
 		mono_codegen (cfg);
 	}
+
+	if (COMPILE_LLVM (cfg))
+		InterlockedIncrement (&mono_jit_stats.methods_with_llvm);
+	else
+		InterlockedIncrement (&mono_jit_stats.methods_without_llvm);
 
 	if (cfg->verbose_level >= 2) {
 		char *id =  mono_method_full_name (cfg->method, FALSE);
@@ -5553,6 +5572,7 @@ mini_get_vtable_trampoline (int slot_index)
 
 			if (vtable_trampolines)
 				memcpy (new_table, vtable_trampolines, vtable_trampolines_size * sizeof (gpointer));
+			g_free (vtable_trampolines);
 			mono_memory_barrier ();
 			vtable_trampolines = new_table;
 			vtable_trampolines_size = new_size;
@@ -5665,6 +5685,15 @@ mini_get_addr_from_ftnptr (gpointer descr)
 	return descr;
 #endif
 }	
+
+static void
+register_jit_stats (void)
+{
+	mono_counters_register ("Compiled methods", MONO_COUNTER_JIT | MONO_COUNTER_LONG, &mono_jit_stats.methods_compiled);
+	mono_counters_register ("Methods from AOT", MONO_COUNTER_JIT | MONO_COUNTER_LONG, &mono_jit_stats.methods_aot);
+	mono_counters_register ("Methods JITted using LLVM", MONO_COUNTER_JIT | MONO_COUNTER_INT, &mono_jit_stats.methods_with_llvm);	
+	mono_counters_register ("Methods JITted using mono JIT", MONO_COUNTER_JIT | MONO_COUNTER_INT, &mono_jit_stats.methods_without_llvm);
+}
 
 static void runtime_invoke_info_free (gpointer value);
  
@@ -5822,9 +5851,11 @@ mini_init (const char *filename, const char *runtime_version)
 	}
 
 #ifdef ENABLE_LLVM
-	if (!mono_llvm_load (NULL)) {
-		mono_use_llvm = FALSE;
-		fprintf (stderr, "Mono Warning: llvm support could not be loaded.\n");
+	if (mono_use_llvm) {
+		if (!mono_llvm_load (NULL)) {
+			mono_use_llvm = FALSE;
+			fprintf (stderr, "Mono Warning: llvm support could not be loaded.\n");
+		}
 	}
 	if (mono_use_llvm)
 		mono_llvm_init ();
@@ -5927,6 +5958,8 @@ mini_init (const char *filename, const char *runtime_version)
 
 	create_helper_signature ();
 
+	register_jit_stats ();
+
 #define JIT_CALLS_WORK
 #ifdef JIT_CALLS_WORK
 	/* Needs to be called here since register_jit_icall depends on it */
@@ -5943,10 +5976,8 @@ mini_init (const char *filename, const char *runtime_version)
 
 	register_icall (mono_get_throw_exception (), "mono_arch_throw_exception", "void object", TRUE);
 	register_icall (mono_get_rethrow_exception (), "mono_arch_rethrow_exception", "void object", TRUE);
-#if MONO_ARCH_HAVE_THROW_CORLIB_EXCEPTION
 	register_icall (mono_get_throw_corlib_exception (), "mono_arch_throw_corlib_exception", 
 				 "void ptr", TRUE);
-#endif
 	register_icall (mono_thread_get_undeniable_exception, "mono_thread_get_undeniable_exception", "object", FALSE);
 	register_icall (mono_thread_interruption_checkpoint, "mono_thread_interruption_checkpoint", "void", FALSE);
 	register_icall (mono_thread_force_interruption_checkpoint, "mono_thread_force_interruption_checkpoint", "void", FALSE);
@@ -6110,9 +6141,7 @@ mini_init (const char *filename, const char *runtime_version)
 	register_icall (mono_get_native_calli_wrapper, "mono_get_native_calli_wrapper", "ptr ptr ptr ptr", FALSE);
 	register_icall (mono_resume_unwind, "mono_resume_unwind", "void", TRUE);
 
-#ifdef HAVE_WRITE_BARRIERS
 	register_icall (mono_gc_wbarrier_value_copy_bitmap, "mono_gc_wbarrier_value_copy_bitmap", "void ptr ptr int int", FALSE);
-#endif
 
 #endif
 
@@ -6154,10 +6183,7 @@ print_jit_stats (void)
 {
 	if (mono_jit_stats.enabled) {
 		g_print ("Mono Jit statistics\n");
-		g_print ("Compiled methods:       %ld\n", mono_jit_stats.methods_compiled);
-		g_print ("Methods from AOT:       %ld\n", mono_jit_stats.methods_aot);
 		g_print ("Methods cache lookup:   %ld\n", mono_jit_stats.methods_lookups);
-		g_print ("Method trampolines:     %ld\n", mono_jit_stats.method_trampolines);
 		g_print ("Basic blocks:           %ld\n", mono_jit_stats.basic_blocks);
 		g_print ("Max basic blocks:       %ld\n", mono_jit_stats.max_basic_blocks);
 		g_print ("Allocated vars:         %ld\n", mono_jit_stats.allocate_var);
@@ -6272,6 +6298,8 @@ mini_cleanup (MonoDomain *domain)
 		mono_llvm_cleanup ();
 #endif
 
+	mono_aot_cleanup ();
+
 	mono_trampolines_cleanup ();
 
 	mono_unwind_cleanup ();
@@ -6281,8 +6309,11 @@ mini_cleanup (MonoDomain *domain)
 	g_hash_table_destroy (jit_icall_name_hash);
 	g_free (emul_opcode_map);
 	g_free (emul_opcode_opcodes);
+	g_free (vtable_trampolines);
 
 	mono_arch_cleanup ();
+
+	mono_generic_sharing_cleanup ();
 
 	mono_cleanup ();
 

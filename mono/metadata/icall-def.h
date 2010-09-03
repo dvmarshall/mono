@@ -506,6 +506,9 @@ ICALL(ASSEM_26, "load_with_partial_name", ves_icall_System_Reflection_Assembly_l
 ICALL_TYPE(ASSEMN, "System.Reflection.AssemblyName", ASSEMN_1)
 ICALL(ASSEMN_1, "ParseName", ves_icall_System_Reflection_AssemblyName_ParseName)
 
+ICALL_TYPE(CATTR_DATA, "System.Reflection.CustomAttributeData", CATTR_DATA_1)
+ICALL(CATTR_DATA_1, "ResolveArgumentsInternal", mono_reflection_resolve_custom_attribute_data)
+
 ICALL_TYPE(ASSEMB, "System.Reflection.Emit.AssemblyBuilder", ASSEMB_1)
 ICALL(ASSEMB_1, "InternalAddModule", mono_image_load_module_dynamic)
 ICALL(ASSEMB_2, "basic_init", mono_image_basic_init)
@@ -597,6 +600,7 @@ ICALL(MFIELD_1, "GetFieldOffset", ves_icall_MonoField_GetFieldOffset)
 ICALL(MFIELD_2, "GetParentType", ves_icall_MonoField_GetParentType)
 ICALL(MFIELD_5, "GetRawConstantValue", ves_icall_MonoField_GetRawConstantValue)
 ICALL(MFIELD_3, "GetValueInternal", ves_icall_MonoField_GetValueInternal)
+ICALL(MFIELD_6, "ResolveType", ves_icall_MonoField_ResolveType)
 ICALL(MFIELD_4, "SetValueInternal", ves_icall_MonoField_SetValueInternal)
 
 ICALL_TYPE(MGENCM, "System.Reflection.MonoGenericCMethod", MGENCM_1)

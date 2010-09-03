@@ -1,19 +1,12 @@
 SUBDIRS = cas assemblyresolve
 
-# avoid including eglib twice since GLIB_LIBS == GMODULE_LIBS for eglib builds
-if EGLIB_BUILD
-glib_libs = $(GLIB_LIBS)
-else
-glib_libs = $(GLIB_LIBS) $(GMODULE_LIBS)
-endif
-
 check-local: test
 
 aotcheck: testaot gshared-aot
 
 TEST_PROG = ../interpreter/mint
 
-JITTEST_PROG = $(if $(SGEN),$(top_builddir)/mono/mini/mono-sgen,$(top_builddir)/mono/mini/mono)
+JITTEST_PROG = $(if $(VALGRIND), valgrind $(VALGRIND_ARGS),) $(if $(SGEN),$(top_builddir)/mono/mini/mono-sgen,$(top_builddir)/mono/mini/mono)
 
 TEST_PROG_RUN = MONO_SHARED_DIR=$(mono_build_root)/runtime MONO_CFG_DIR=$(mono_build_root)/runtime/etc $(LIBTOOL) --mode=execute $(TEST_PROG)
 JITTEST_PROG_RUN = MONO_SHARED_DIR=$(mono_build_root)/runtime MONO_CFG_DIR=$(mono_build_root)/runtime/etc $(LIBTOOL) --mode=execute $(JITTEST_PROG)
@@ -221,6 +214,7 @@ BASE_TEST_CS_SRC=		\
 	threadpool-exceptions4.cs \
 	threadpool-exceptions5.cs \
 	threadpool-exceptions6.cs \
+	threadpool-exceptions7.cs \
 	base-definition.cs	\
 	bug-27420.cs		\
 	bug-47295.cs		\
@@ -496,7 +490,8 @@ TEST_IL_SRC=			\
 	array_load_exception.il \
 	bug-481403.il	\
 	interface-with-static-method.il	\
-	bug-515884.il
+	bug-515884.il	\
+	bug-633291.il
 
 #	bug-318677.il
 
@@ -891,6 +886,6 @@ else
 libtest_la_LDFLAGS = -rpath `pwd`
 endif
 libtest_la_SOURCES = libtest.c
-libtest_la_LIBADD = $(glib_libs)
+libtest_la_LIBADD = $(GLIB_LIBS)
 
 CLEANFILES = $(TESTSI_CS) $(TESTSI_IL) $(STRESS_TESTS) *.dll *.stdout *.aotlog *.exe stest.dat

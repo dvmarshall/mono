@@ -1226,7 +1226,6 @@ typedef struct {
 	gulong methods_compiled;
 	gulong methods_aot;
 	gulong methods_lookups;
-	gulong method_trampolines;
 	gulong allocate_var;
 	gulong cil_code_size;
 	gulong native_code_size;
@@ -1247,6 +1246,8 @@ typedef struct {
 	gulong cas_linkdemand;
 	gulong cas_demand_generation;
 	gulong generic_virtual_invocations;
+    int methods_with_llvm;
+	int methods_without_llvm;
 	char *max_ratio_method;
 	char *biggest_method;
 	gboolean enabled;
@@ -1275,6 +1276,7 @@ enum {
 #define OP_PCONST OP_I8CONST
 #define OP_PADD OP_LADD
 #define OP_PADD_IMM OP_LADD_IMM
+#define OP_PAND_IMM OP_LAND_IMM
 #define OP_PSUB OP_LSUB
 #define OP_PMUL OP_LMUL
 #define OP_PMUL_IMM OP_LMUL_IMM
@@ -1297,6 +1299,7 @@ enum {
 #define OP_PCONST OP_ICONST
 #define OP_PADD OP_IADD
 #define OP_PADD_IMM OP_IADD_IMM
+#define OP_PAND_IMM OP_IAND_IMM
 #define OP_PSUB OP_ISUB
 #define OP_PMUL OP_IMUL
 #define OP_PMUL_IMM OP_IMUL_IMM
@@ -1611,6 +1614,7 @@ guint8 *mono_arch_nacl_skip_nops(guint8 *code);
 
 /* AOT */
 void      mono_aot_init                     (void) MONO_INTERNAL;
+void      mono_aot_cleanup                  (void) MONO_INTERNAL;
 gpointer  mono_aot_get_method               (MonoDomain *domain,
 											 MonoMethod *method) MONO_INTERNAL;
 gpointer  mono_aot_get_method_from_token    (MonoDomain *domain, MonoImage *image, guint32 token) MONO_INTERNAL;
@@ -2069,6 +2073,7 @@ gpointer mono_helper_get_rgctx_other_ptr (MonoClass *caller_class, MonoVTable *v
 					  gint32 rgctx_index) MONO_INTERNAL;
 
 void mono_generic_sharing_init (void) MONO_INTERNAL;
+void mono_generic_sharing_cleanup (void) MONO_INTERNAL;
 
 MonoClass* mini_class_get_container_class (MonoClass *class) MONO_INTERNAL;
 MonoGenericContext* mini_class_get_context (MonoClass *class) MONO_INTERNAL;
