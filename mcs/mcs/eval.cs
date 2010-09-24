@@ -879,7 +879,7 @@ namespace Mono.CSharp {
 		{
 			lock (evaluator_lock){
 				driver.LoadAssembly (file, false);
-				GlobalRootNamespace.Instance.ComputeNamespaces (ctx);
+				ctx.GlobalRootNamespace.ComputeNamespaces (ctx);
 			}
 		}
 
@@ -891,7 +891,7 @@ namespace Mono.CSharp {
 			lock (evaluator_lock){
 //				GlobalRootNamespace.Instance.AddAssemblyReference (a);
 //				GlobalRootNamespace.Instance.ComputeNamespaces (ctx);
-				ctx.MetaImporter.ImportAssembly (a, GlobalRootNamespace.Instance);
+				ctx.MetaImporter.ImportAssembly (a, ctx.GlobalRootNamespace);
 			}
 		}
 
@@ -1186,31 +1186,11 @@ namespace Mono.CSharp {
 			}
 	
 			// This means its really a statement.
-			if (clone.Type == TypeManager.void_type){
-				source = source.Resolve (ec);
-				target = null;
-				type = TypeManager.void_type;
-				eclass = ExprClass.Value;
-				return this;
+			if (clone.Type == TypeManager.void_type || clone is DynamicInvocation || clone is Assign) {
+				return clone;
 			}
 
 			return base.DoResolve (ec);
-		}
-
-		public override void Emit (EmitContext ec)
-		{
-			if (target == null)
-				source.Emit (ec);
-			else
-				base.Emit (ec);
-		}
-
-		public override void EmitStatement (EmitContext ec)
-		{
-			if (target == null)
-				source.Emit (ec);
-			else
-				base.EmitStatement (ec);
 		}
 	}
 
