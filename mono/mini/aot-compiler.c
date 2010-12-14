@@ -82,6 +82,8 @@
 #define SHARED_EXT ".dll"
 #elif defined(__ppc__) && defined(__MACH__)
 #define SHARED_EXT ".dylib"
+#elif defined(__APPLE__) && defined(TARGET_X86) && !defined(__native_client_codegen__)
+#define SHARED_EXT ".dylib"
 #else
 #define SHARED_EXT ".so"
 #endif
@@ -178,6 +180,7 @@ typedef struct MonoAotCompile {
 	gboolean llvm;
 	MonoAotFileFlags flags;
 	MonoDynamicStream blob;
+	MonoClass **typespec_classes;
 } MonoAotCompile;
 
 typedef struct {
@@ -1564,16 +1567,21 @@ static guint32
 find_typespec_for_class (MonoAotCompile *acfg, MonoClass *klass)
 {
 	int i;
-	MonoClass *k = NULL;
+	int len = acfg->image->tables [MONO_TABLE_TYPESPEC].rows;
 
 	/* FIXME: Search referenced images as well */
-	for (i = 0; i < acfg->image->tables [MONO_TABLE_TYPESPEC].rows; ++i) {
-		k = mono_class_get_full (acfg->image, MONO_TOKEN_TYPE_SPEC | (i + 1), NULL);
-		if (k == klass)
+	if (!acfg->typespec_classes) {
+		acfg->typespec_classes = mono_mempool_alloc0 (acfg->mempool, sizeof (MonoClass*) * len);
+		for (i = 0; i < len; ++i) {
+			acfg->typespec_classes [i] = mono_class_get_full (acfg->image, MONO_TOKEN_TYPE_SPEC | (i + 1), NULL);
+		}
+	}
+	for (i = 0; i < len; ++i) {
+		if (acfg->typespec_classes [i] == klass)
 			break;
 	}
 
-	if (i < acfg->image->tables [MONO_TABLE_TYPESPEC].rows)
+	if (i < len)
 		return MONO_TOKEN_TYPE_SPEC | (i + 1);
 	else
 		return 0;
@@ -2685,20 +2693,22 @@ add_generic_class_with_depth (MonoAotCompile *acfg, MonoClass *klass, int depth)
 	/* Add an instance of GenericEqualityComparer<T> which is created dynamically by EqualityComparer<T> */
 	if (klass->image == mono_defaults.corlib && !strcmp (klass->name_space, "System.Collections.Generic") && !strcmp (klass->name, "EqualityComparer`1")) {
 		MonoClass *tclass = mono_class_from_mono_type (klass->generic_class->context.class_inst->type_argv [0]);
-		MonoClass *icomparable, *gcomparer;
+		MonoClass *iface, *gcomparer;
 		MonoGenericContext ctx;
 		MonoType *args [16];
 
 		memset (&ctx, 0, sizeof (ctx));
 
-		icomparable = mono_class_from_name (mono_defaults.corlib, "System", "IComparable`1");
-		g_assert (icomparable);
+		iface = mono_class_from_name (mono_defaults.corlib, "System", "IEquatable`1");
+		g_assert (iface);
 		args [0] = &tclass->byval_arg;
 		ctx.class_inst = mono_metadata_get_generic_inst (1, args);
 
-		gcomparer = mono_class_from_name (mono_defaults.corlib, "System.Collections.Generic", "GenericEqualityComparer`1");
-		g_assert (gcomparer);
-		add_generic_class (acfg, mono_class_inflate_generic_class (gcomparer, &ctx));
+		if (mono_class_is_assignable_from (mono_class_inflate_generic_class (iface, &ctx), tclass)) {
+			gcomparer = mono_class_from_name (mono_defaults.corlib, "System.Collections.Generic", "GenericEqualityComparer`1");
+			g_assert (gcomparer);
+			add_generic_class (acfg, mono_class_inflate_generic_class (gcomparer, &ctx));
+		}
 	}
 }
 
@@ -6039,6 +6049,8 @@ compile_asm (MonoAotCompile *acfg)
 #define LD_OPTIONS "-m elf64ppc"
 #elif defined(sparc) && SIZEOF_VOID_P == 8
 #define AS_OPTIONS "-xarch=v9"
+#elif defined(TARGET_X86) && defined(__APPLE__) && !defined(__native_client_codegen__)
+#define AS_OPTIONS "-arch i386 -W"
 #else
 #define AS_OPTIONS ""
 #endif
@@ -6104,6 +6116,8 @@ compile_asm (MonoAotCompile *acfg)
 	command = g_strdup_printf ("gcc -dynamiclib -o %s %s.o", tmp_outfile_name, acfg->tmpfname);
 #elif defined(HOST_WIN32)
 	command = g_strdup_printf ("gcc -shared --dll -mno-cygwin -o %s %s.o", tmp_outfile_name, acfg->tmpfname);
+#elif defined(TARGET_X86) && defined(__APPLE__) && !defined(__native_client_codegen__)
+	command = g_strdup_printf ("gcc -m32 -dynamiclib -o %s %s.o", tmp_outfile_name, acfg->tmpfname);
 #else
 	command = g_strdup_printf ("%sld %s %s -shared -o %s %s.o", tool_prefix, EH_LD_OPTIONS, LD_OPTIONS, tmp_outfile_name, acfg->tmpfname);
 #endif

@@ -409,7 +409,7 @@ public class Tests : TestsBase
 	[MethodImplAttribute (MethodImplOptions.NoInlining)]
 	public static void locals () {
 		locals1 (null);
-		locals2 (null, 5);
+		locals2<string> (null, 5, "ABC");
 		locals3 ();
 	}
 
@@ -423,12 +423,14 @@ public class Tests : TestsBase
 	}
 
 	[MethodImplAttribute (MethodImplOptions.NoInlining)]
-	public static void locals2 (string[] args, int arg) {
+	public static void locals2<T> (string[] args, int arg, T t) {
 		long i = 42;
 		string s = "AB";
 
 		for (int j = 0; j < 10; ++j) {
 			if (s != null)
+				i ++;
+			if (t != null)
 				i ++;
 		}
 	}
@@ -618,6 +620,23 @@ public class Tests : TestsBase
 			o.GetType ();
 		} catch (Exception) {
 		}
+
+		try {
+			exceptions2 ();
+		} catch (Exception) {
+		}
+	}
+
+	[MethodImplAttribute (MethodImplOptions.NoInlining)]
+	public static bool return_true () {
+		return true;
+	}
+
+	[MethodImplAttribute (MethodImplOptions.NoInlining)]
+	public static void exceptions2 () {
+		if (return_true ())
+			throw new Exception ();
+		Console.WriteLine ();
 	}
 
 	[MethodImplAttribute (MethodImplOptions.NoInlining)]
