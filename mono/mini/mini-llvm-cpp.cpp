@@ -46,6 +46,10 @@
 
 #include "mini-llvm-cpp.h"
 
+#define LLVM_CHECK_VERSION(major,minor) \
+	((LLVM_MAJOR_VERSION > (major)) ||									\
+	 ((LLVM_MAJOR_VERSION == (major)) && (LLVM_MINOR_VERSION >= (minor))))
+
 extern "C" void LLVMInitializeX86TargetInfo();
 
 using namespace llvm;
@@ -124,6 +128,7 @@ MonoJITMemoryManager::MonoJITMemoryManager ()
 
 MonoJITMemoryManager::~MonoJITMemoryManager ()
 {
+	delete mm;
 }
 
 void
@@ -204,69 +209,6 @@ MonoJITMemoryManager::endExceptionTable(const Function *F, unsigned char *TableS
 {
 }
 
-static MonoJITMemoryManager *mono_mm;
-
-static FunctionPassManager *fpm;
-
-void
-mono_llvm_optimize_method (LLVMValueRef method)
-{
-	verifyFunction (*(unwrap<Function> (method)));
-	fpm->run (*unwrap<Function> (method));
-}
-
-void
-mono_llvm_dump_value (LLVMValueRef value)
-{
-	/* Same as LLVMDumpValue (), but print to stdout */
-	outs () << (*unwrap<Value> (value));
-}
-
-/* Missing overload for building an alloca with an alignment */
-LLVMValueRef
-mono_llvm_build_alloca (LLVMBuilderRef builder, LLVMTypeRef Ty, 
-						LLVMValueRef ArraySize,
-						int alignment, const char *Name)
-{
-	return wrap (unwrap (builder)->Insert (new AllocaInst (unwrap (Ty), unwrap (ArraySize), alignment), Name));
-}
-
-LLVMValueRef 
-mono_llvm_build_load (LLVMBuilderRef builder, LLVMValueRef PointerVal,
-					  const char *Name, gboolean is_volatile)
-{
-	return wrap(unwrap(builder)->CreateLoad(unwrap(PointerVal), is_volatile, Name));
-}
-
-LLVMValueRef 
-mono_llvm_build_aligned_load (LLVMBuilderRef builder, LLVMValueRef PointerVal,
-							  const char *Name, gboolean is_volatile, int alignment)
-{
-	LoadInst *ins;
-
-	ins = unwrap(builder)->CreateLoad(unwrap(PointerVal), is_volatile, Name);
-	ins->setAlignment (alignment);
-
-	return wrap(ins);
-}
-
-LLVMValueRef 
-mono_llvm_build_store (LLVMBuilderRef builder, LLVMValueRef Val, LLVMValueRef PointerVal,
-					  gboolean is_volatile)
-{
-	return wrap(unwrap(builder)->CreateStore(unwrap(Val), unwrap(PointerVal), is_volatile));
-}
-
-void
-mono_llvm_replace_uses_of (LLVMValueRef var, LLVMValueRef v)
-{
-	Value *V = ConstantExpr::getTruncOrBitCast (unwrap<Constant> (v), unwrap (var)->getType ());
-	unwrap (var)->replaceAllUsesWith (V);
-}
-
-static cl::list<const PassInfo*, bool, PassNameParser>
-PassList(cl::desc("Optimizations available:"));
-
 class MonoJITEventListener : public JITEventListener {
 
 public:
@@ -305,6 +247,83 @@ public:
 		emitted_cb (wrap (&F), Code, (char*)Code + Size);
 	}
 };
+
+static MonoJITMemoryManager *mono_mm;
+static MonoJITEventListener *mono_event_listener;
+
+static FunctionPassManager *fpm;
+
+void
+mono_llvm_optimize_method (LLVMValueRef method)
+{
+	verifyFunction (*(unwrap<Function> (method)));
+	fpm->run (*unwrap<Function> (method));
+}
+
+void
+mono_llvm_dump_value (LLVMValueRef value)
+{
+	/* Same as LLVMDumpValue (), but print to stdout */
+	fflush (stdout);
+	outs () << (*unwrap<Value> (value));
+}
+
+/* Missing overload for building an alloca with an alignment */
+LLVMValueRef
+mono_llvm_build_alloca (LLVMBuilderRef builder, LLVMTypeRef Ty, 
+						LLVMValueRef ArraySize,
+						int alignment, const char *Name)
+{
+	return wrap (unwrap (builder)->Insert (new AllocaInst (unwrap (Ty), unwrap (ArraySize), alignment), Name));
+}
+
+LLVMValueRef 
+mono_llvm_build_load (LLVMBuilderRef builder, LLVMValueRef PointerVal,
+					  const char *Name, gboolean is_volatile)
+{
+	return wrap(unwrap(builder)->CreateLoad(unwrap(PointerVal), is_volatile, Name));
+}
+
+LLVMValueRef 
+mono_llvm_build_aligned_load (LLVMBuilderRef builder, LLVMValueRef PointerVal,
+							  const char *Name, gboolean is_volatile, int alignment)
+{
+	LoadInst *ins;
+
+	ins = unwrap(builder)->CreateLoad(unwrap(PointerVal), is_volatile, Name);
+	ins->setAlignment (alignment);
+
+	return wrap(ins);
+}
+
+LLVMValueRef 
+mono_llvm_build_store (LLVMBuilderRef builder, LLVMValueRef Val, LLVMValueRef PointerVal,
+					  gboolean is_volatile)
+{
+	return wrap(unwrap(builder)->CreateStore(unwrap(Val), unwrap(PointerVal), is_volatile));
+}
+
+LLVMValueRef 
+mono_llvm_build_aligned_store (LLVMBuilderRef builder, LLVMValueRef Val, LLVMValueRef PointerVal,
+							   gboolean is_volatile, int alignment)
+{
+	StoreInst *ins;
+
+	ins = unwrap(builder)->CreateStore(unwrap(Val), unwrap(PointerVal), is_volatile);
+	ins->setAlignment (alignment);
+
+	return wrap (ins);
+}
+
+void
+mono_llvm_replace_uses_of (LLVMValueRef var, LLVMValueRef v)
+{
+	Value *V = ConstantExpr::getTruncOrBitCast (unwrap<Constant> (v), unwrap (var)->getType ());
+	unwrap (var)->replaceAllUsesWith (V);
+}
+
+static cl::list<const PassInfo*, bool, PassNameParser>
+PassList(cl::desc("Optimizations available:"));
 
 static void
 force_pass_linking (void)
@@ -374,7 +393,6 @@ force_pass_linking (void)
       (void) llvm::createLoopUnrollPass();
       (void) llvm::createLoopUnswitchPass();
       (void) llvm::createLoopRotatePass();
-      (void) llvm::createLoopIndexSplitPass();
       (void) llvm::createLowerInvokePass();
 	  /*
       (void) llvm::createLowerSetJmpPass();
@@ -431,12 +449,7 @@ force_pass_linking (void)
       (void) llvm::createDbgInfoPrinterPass();
       (void) llvm::createModuleDebugInfoPrinterPass();
       (void) llvm::createPartialInliningPass();
-	  */
-      (void) llvm::createSSIPass();
-      (void) llvm::createSSIEverythingPass();
       (void) llvm::createGEPSplitterPass();
-      (void) llvm::createABCDPass();
-	  /*
       (void) llvm::createLintPass();
 	  */
       (void) llvm::createSinkingPass();
@@ -469,11 +482,25 @@ mono_llvm_create_ee (LLVMModuleProviderRef MP, AllocCodeMemoryCb *alloc_cb, Func
 	  g_assert_not_reached ();
   }
   EE->InstallExceptionTableRegister (exception_cb);
-  EE->RegisterJITEventListener (new MonoJITEventListener (emitted_cb));
+  mono_event_listener = new MonoJITEventListener (emitted_cb);
+  EE->RegisterJITEventListener (mono_event_listener);
 
   fpm = new FunctionPassManager (unwrap (MP));
 
   fpm->add(new TargetData(*EE->getTargetData()));
+
+#if LLVM_CHECK_VERSION(2, 9)
+  PassRegistry &Registry = *PassRegistry::getPassRegistry();
+  initializeCore(Registry);
+  initializeScalarOpts(Registry);
+  //initializeIPO(Registry);
+  initializeAnalysis(Registry);
+  initializeIPA(Registry);
+  initializeTransformUtils(Registry);
+  initializeInstCombine(Registry);
+  //initializeInstrumentation(Registry);
+  initializeTarget(Registry);
+#endif
 
   llvm::cl::ParseEnvironmentOptions("mono", "MONO_LLVM", "", false);
 
@@ -498,7 +525,7 @@ mono_llvm_create_ee (LLVMModuleProviderRef MP, AllocCodeMemoryCb *alloc_cb, Func
 	  for (i = 0; args [i]; i++)
 		  ;
 	  llvm::cl::ParseCommandLineOptions (i, args, "", false);
-	  g_free (args);
+	  g_strfreev (args);
 
 	  for (unsigned i = 0; i < PassList.size(); ++i) {
 		  const PassInfo *PassInf = PassList[i];

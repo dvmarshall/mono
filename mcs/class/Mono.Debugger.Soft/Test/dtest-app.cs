@@ -156,6 +156,8 @@ public class Tests : TestsBase
 	}
 
 	public static int Main (String[] args) {
+		tls_i = 42;
+
 		if (args.Length > 0 && args [0] == "suspend-test")
 			/* This contains an infinite loop, so execute it conditionally */
 			suspend ();
@@ -171,6 +173,7 @@ public class Tests : TestsBase
 		assembly_load ();
 		invoke ();
 		exceptions ();
+		exception_filter ();
 		threads ();
 		dynamic_methods ();
 		if (args.Length > 0 && args [0] == "domain-test")
@@ -243,6 +246,7 @@ public class Tests : TestsBase
 			ss6 (true);
 		} catch {
 		}
+		ss_regress_654694 ();
 	}
 
 	[MethodImplAttribute (MethodImplOptions.NoInlining)]
@@ -409,7 +413,7 @@ public class Tests : TestsBase
 	[MethodImplAttribute (MethodImplOptions.NoInlining)]
 	public static void locals () {
 		locals1 (null);
-		locals2 (null, 5);
+		locals2<string> (null, 5, "ABC");
 		locals3 ();
 	}
 
@@ -423,12 +427,14 @@ public class Tests : TestsBase
 	}
 
 	[MethodImplAttribute (MethodImplOptions.NoInlining)]
-	public static void locals2 (string[] args, int arg) {
+	public static void locals2<T> (string[] args, int arg, T t) {
 		long i = 42;
 		string s = "AB";
 
 		for (int j = 0; j < 10; ++j) {
 			if (s != null)
+				i ++;
+			if (t != null)
 				i ++;
 		}
 	}
@@ -515,6 +521,7 @@ public class Tests : TestsBase
 	[MethodImplAttribute (MethodImplOptions.NoInlining)]
 	public static void invoke () {
 		new Tests ().invoke1 (new Tests2 (), new AStruct () { i = 42, j = (IntPtr)43 }, new GStruct<int> { j = 42 });
+		new Tests ().invoke_ex ();
 	}
 
 	[MethodImplAttribute (MethodImplOptions.NoInlining)]
@@ -524,6 +531,19 @@ public class Tests : TestsBase
 
 	[MethodImplAttribute (MethodImplOptions.NoInlining)]
 	public void invoke2 () {
+	}
+
+	[MethodImplAttribute (MethodImplOptions.NoInlining)]
+	public void invoke_ex () {
+		invoke_ex_inner ();
+	}
+
+	[MethodImplAttribute (MethodImplOptions.NoInlining)]
+	public void invoke_ex_inner () {
+		try {
+			throw new Exception ();
+		} catch {
+		}
 	}
 
 	int counter;
@@ -562,6 +582,14 @@ public class Tests : TestsBase
 
 	public int invoke_return_primitive () {
 		return 42;
+	}
+
+	public int? invoke_return_nullable () {
+		return 42;
+	}
+
+	public int? invoke_return_nullable_null () {
+		return null;
 	}
 
 	public void invoke_type_load () {
@@ -618,6 +646,95 @@ public class Tests : TestsBase
 			o.GetType ();
 		} catch (Exception) {
 		}
+
+		try {
+			exceptions2 ();
+		} catch (Exception) {
+		}
+	}
+
+	internal static Delegate create_filter_delegate (Delegate dlg, MethodInfo filter_method)
+	{
+		if (dlg == null)
+			throw new ArgumentNullException ();
+		if (dlg.Target != null)
+			throw new ArgumentException ();
+		if (dlg.Method == null)
+			throw new ArgumentException ();
+
+		var ret_type = dlg.Method.ReturnType;
+		var param_types = dlg.Method.GetParameters ().Select (x => x.ParameterType).ToArray ();
+
+		var dynamic = new DynamicMethod (Guid.NewGuid ().ToString (), ret_type, param_types, typeof (object), true);
+		var ig = dynamic.GetILGenerator ();
+
+		LocalBuilder retval = null;
+		if (ret_type != typeof (void))
+			retval = ig.DeclareLocal (ret_type);
+
+		var label = ig.BeginExceptionBlock ();
+
+		for (int i = 0; i < param_types.Length; i++)
+			ig.Emit (OpCodes.Ldarg, i);
+		ig.Emit (OpCodes.Call, dlg.Method);
+
+		if (retval != null)
+			ig.Emit (OpCodes.Stloc, retval);
+
+		ig.Emit (OpCodes.Leave, label);
+
+		ig.BeginExceptFilterBlock ();
+
+		ig.Emit (OpCodes.Call, filter_method);
+
+		ig.BeginCatchBlock (null);
+
+		ig.Emit (OpCodes.Pop);
+
+		ig.EndExceptionBlock ();
+
+		if (retval != null)
+			ig.Emit (OpCodes.Ldloc, retval);
+
+		ig.Emit (OpCodes.Ret);
+
+		return dynamic.CreateDelegate (dlg.GetType ());
+	}
+
+	[MethodImplAttribute (MethodImplOptions.NoInlining)]
+	static void exception_filter_method () {
+		throw new InvalidOperationException ();
+	}
+
+	[MethodImplAttribute (MethodImplOptions.NoInlining)]
+	static int exception_filter_filter (Exception exc) {
+		return 1;
+	}
+
+	[MethodImplAttribute (MethodImplOptions.NoInlining)]
+	public static void exception_filter () {
+		var method = typeof (Tests).GetMethod (
+			"exception_filter_method", BindingFlags.NonPublic | BindingFlags.Static);
+		var filter_method = typeof (Tests).GetMethod (
+			"exception_filter_filter", BindingFlags.NonPublic | BindingFlags.Static);
+
+		var dlg = Delegate.CreateDelegate (typeof (Action), method);
+
+		var wrapper = (Action) create_filter_delegate (dlg, filter_method);
+
+		wrapper ();
+	}
+
+	[MethodImplAttribute (MethodImplOptions.NoInlining)]
+	public static bool return_true () {
+		return true;
+	}
+
+	[MethodImplAttribute (MethodImplOptions.NoInlining)]
+	public static void exceptions2 () {
+		if (return_true ())
+			throw new Exception ();
+		Console.WriteLine ();
 	}
 
 	[MethodImplAttribute (MethodImplOptions.NoInlining)]
@@ -705,6 +822,18 @@ public class Tests : TestsBase
 	[MethodImplAttribute (MethodImplOptions.NoInlining)]
 	public static void frames_in_native () {
 		Thread.Sleep (500);
+	}
+
+	[MethodImplAttribute (MethodImplOptions.NoInlining)]
+	public static void string_call (string s) {
+	}
+
+	[MethodImplAttribute (MethodImplOptions.NoInlining)]
+	public static void ss_regress_654694 () {
+		if (true) {
+			string h = "hi";
+			string_call (h);
+		}
 	}
 }
 

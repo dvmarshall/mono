@@ -218,6 +218,28 @@ namespace MonoTests.System
 		}
 
 		[Test]
+		public void BindByNameManySlashes ()
+		{
+			var t = new UriTemplate ("////{foo}/{bar}/");
+			var n = new NameValueCollection ();
+			n.Add ("Bar", "value1"); // case insensitive
+			n.Add ("FOO", "value2"); // case insensitive
+			var u = t.BindByName (new Uri ("http://localhost/"), n);
+			Assert.AreEqual ("http://localhost////value2/value1/", u.ToString ());
+		}
+
+		[Test]
+		public void BindByNameManySlashes2 ()
+		{
+			var t = new UriTemplate ("////{foo}/{bar}/");
+			var n = new NameValueCollection ();
+			n.Add ("Bar", "value1"); // case insensitive
+			n.Add ("FOO", "value2"); // case insensitive
+			var u = t.BindByName (new Uri ("http://localhost//"), n);
+			Assert.AreEqual ("http://localhost/////value2/value1/", u.ToString ());
+		}
+		
+		[Test]
 		public void BindByNameWithDefaults ()
 		{
 			var d = new Dictionary<string,string> ();
@@ -295,6 +317,22 @@ namespace MonoTests.System
 			d ["baz"] = "value3";
 			var t = new UriTemplate ("/{foo}/{bar}/{baz}", d);
 			t.BindByPosition (new Uri ("http://localhost/"), "value1", "value2");
+		}
+
+		[Test]
+		[ExpectedException (typeof (ArgumentNullException))]
+		public void MatchNullArgument1 ()
+		{
+			var t = new UriTemplate ("/hooray");
+			t.Match (null, new Uri ("http://localhost/"));
+		}
+
+		[Test]
+		[ExpectedException (typeof (ArgumentNullException))]
+		public void MatchNullArgument2 ()
+		{
+			var t = new UriTemplate ("/hooray");
+			t.Match (new Uri ("http://localhost/"), null);
 		}
 
 		[Test]

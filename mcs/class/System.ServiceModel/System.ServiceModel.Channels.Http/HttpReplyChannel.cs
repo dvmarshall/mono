@@ -28,9 +28,12 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.Specialized;
+using System.IdentityModel.Selectors;
+using System.IdentityModel.Tokens;
 using System.IO;
 using System.Net;
 using System.ServiceModel;
+using System.ServiceModel.Security;
 using System.Text;
 using System.Threading;
 
@@ -40,11 +43,18 @@ namespace System.ServiceModel.Channels.Http
 	{
 		HttpChannelListener<IReplyChannel> source;
 		RequestContext reqctx;
+		SecurityTokenAuthenticator security_token_authenticator;
+		SecurityTokenResolver security_token_resolver;
 
 		public HttpReplyChannel (HttpChannelListener<IReplyChannel> listener)
 			: base (listener)
 		{
 			this.source = listener;
+
+			if (listener.SecurityTokenManager != null) {
+				var str = new SecurityTokenRequirement () { TokenType = SecurityTokenTypes.UserName };
+				security_token_authenticator = listener.SecurityTokenManager.CreateSecurityTokenAuthenticator (str, out security_token_resolver);
+			}
 		}
 
 		public MessageEncoder Encoder {
@@ -139,6 +149,19 @@ namespace System.ServiceModel.Channels.Http
 			if (ctxi == null)
 				return true; // returning true, yet context is null. This happens at closing phase.
 
+			if (source.Source.AuthenticationScheme != AuthenticationSchemes.Anonymous) {
+				if (security_token_authenticator != null)
+					// FIXME: use return value?
+					try {
+						security_token_authenticator.ValidateToken (new UserNameSecurityToken (ctxi.User, ctxi.Password));
+					} catch (Exception) {
+						ctxi.ReturnUnauthorized ();
+					}
+				else {
+					ctxi.ReturnUnauthorized ();
+				}
+			}
+
 			Message msg = null;
 
 			if (ctxi.Request.HttpMethod == "POST") {
@@ -177,8 +200,29 @@ namespace System.ServiceModel.Channels.Http
 			// FIXME: supply maxSizeOfHeaders.
 			int maxSizeOfHeaders = 0x10000;
 
+#if false // FIXME: enable it, once duplex callback test gets passed.
+			Stream stream = ctxi.Request.InputStream;
+			if (source.Source.TransferMode == TransferMode.Buffered) {
+				if (ctxi.Request.ContentLength64 <= 0)
+					throw new ArgumentException ("This HTTP channel is configured to use buffered mode, and thus expects Content-Length sent to the listener");
+				long size = 0;
+				var ms = new MemoryStream ();
+				var buf = new byte [0x1000];
+				while (size < ctxi.Request.ContentLength64) {
+					if ((size += stream.Read (buf, 0, 0x1000)) > source.Source.MaxBufferSize)
+						throw new QuotaExceededException ("Message quota exceeded");
+					ms.Write (buf, 0, (int) (size - ms.Length));
+				}
+				ms.Position = 0;
+				stream = ms;
+			}
+
+			var msg = Encoder.ReadMessage (
+				stream, maxSizeOfHeaders, ctxi.Request.ContentType);
+#else
 			var msg = Encoder.ReadMessage (
 				ctxi.Request.InputStream, maxSizeOfHeaders, ctxi.Request.ContentType);
+#endif
 
 			if (MessageVersion.Envelope.Equals (EnvelopeVersion.Soap11) ||
 			    MessageVersion.Addressing.Equals (AddressingVersion.None)) {

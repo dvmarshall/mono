@@ -157,6 +157,7 @@ namespace System.ServiceModel.Channels.Http
 
 	abstract class HttpRequestInfo
 	{
+		public abstract long ContentLength64 { get; }
 		public abstract NameValueCollection QueryString { get; }
 		public abstract NameValueCollection Headers { get; }
 		public abstract Uri Url { get; }
@@ -174,6 +175,9 @@ namespace System.ServiceModel.Channels.Http
 		
 		HttpListenerRequest req;
 
+		public override long ContentLength64 {
+			get { return req.ContentLength64; }
+		}
 		public override NameValueCollection QueryString {
 			get { return req.QueryString; }
 		}
@@ -203,6 +207,9 @@ namespace System.ServiceModel.Channels.Http
 		
 		HttpRequest req;
 
+		public override long ContentLength64 {
+			get { return req.ContentLength; }
+		}
 		public override NameValueCollection QueryString {
 			get { return req.QueryString; }
 		}
@@ -318,14 +325,15 @@ namespace System.ServiceModel.Channels.Http
 		
 		public override void Abort ()
 		{
-			res.Flush ();
-			res.Close ();
+			res.End ();
 		}
 		
 		public override void Close ()
 		{
-			res.Flush ();
-			res.Close ();
+			// We must not close the response here, as everything is taking place in the
+			// HttpApplication's pipeline context and the output is sent to the client
+			// _after_ we leave this method. Closing the response here will stop any
+			// output from reaching the client.
 		}
 		
 		public override void SetLength (long value)

@@ -31,6 +31,7 @@ using System.Windows.Markup;
 using System.Xaml;
 using System.Xaml.Schema;
 using NUnit.Framework;
+using MonoTests.System.Xaml;
 
 using Category = NUnit.Framework.CategoryAttribute;
 
@@ -77,6 +78,8 @@ namespace MonoTests.System.Windows.Markup
 					Assert.IsNull (v, "NoSerializer_" + t.Name);
 					continue;
 				}
+				else if (v == null)
+					Assert.Fail ("Missing serializer for " + t.Name);
 
 				// String ValueSerializer is the only exceptional one that mostly fails ConvertToString().
 				// For remaining types, ConvertToString() should succeed.
@@ -99,6 +102,26 @@ namespace MonoTests.System.Windows.Markup
 					//Assert.AreEqual (test_values [i++], v.ConvertFromString (str, null), "value-" + t.Name + "_" + str);
 				}
 			}
+		}
+
+		[Test]
+		public void GetSerializerFor ()
+		{
+			Assert.IsNull (ValueSerializer.GetSerializerFor (typeof (Array)), "#1");
+			Assert.IsNotNull (ValueSerializer.GetSerializerFor (typeof (Uri)), "#2");
+			Assert.IsNotNull (ValueSerializer.GetSerializerFor (typeof (Type)), "#3"); // has no TypeConverter (undocumented behavior)
+			Assert.IsNotNull (ValueSerializer.GetSerializerFor (typeof (string)), "#4"); // documented as special
+			Assert.IsNotNull (ValueSerializer.GetSerializerFor (typeof (DateTime)), "#5"); // documented as special
+			Assert.IsNotNull (ValueSerializer.GetSerializerFor (typeof (bool)), "#6"); // has no TypeConverter (undocumented behavior)
+			Assert.IsNotNull (ValueSerializer.GetSerializerFor (typeof (byte)), "#7"); // has no TypeConverter (undocumented behavior)
+			Assert.IsNotNull (ValueSerializer.GetSerializerFor (typeof (char)), "#8"); // has no TypeConverter (undocumented behavior)
+			Assert.IsNull (ValueSerializer.GetSerializerFor (typeof (DBNull)), "#9"); // TypeCode.DBNull
+			Assert.IsNull (ValueSerializer.GetSerializerFor (typeof (object)), "#10");
+			Assert.IsNotNull (ValueSerializer.GetSerializerFor (typeof (TimeSpan)), "#11"); // has no TypeConverter (undocumented behavior), TypeCode.Object -> unexpectedly has non-null serializer!
+			Assert.IsNull (ValueSerializer.GetSerializerFor (typeof (DateTimeOffset)), "#12"); // has no TypeConverter (undocumented behavior), TypeCode.Object -> expected
+			Assert.IsNull (ValueSerializer.GetSerializerFor (typeof (MyExtension)), "#13");
+			Assert.IsNotNull (ValueSerializer.GetSerializerFor (typeof (MyExtension4)), "#14"); // has TypeConverter.
+			Assert.IsNull (ValueSerializer.GetSerializerFor (typeof (XamlType)), "#15"); // While there is XamlTypeTypeConverter, it is not used on XamlType.
 		}
 
 		[Test]
@@ -127,10 +150,30 @@ namespace MonoTests.System.Windows.Markup
 				} catch (NotSupportedException) {
 				}
 			}
+			
+			Assert.AreEqual (typeof (NotSupportedException), v.CallGetConvertFromException (null).GetType (), "#1");
+			Assert.AreEqual (typeof (NotSupportedException), v.CallGetConvertToException (null, typeof (int)).GetType (), "#2");
+			Assert.IsFalse (v.TypeReferences (null, null).GetEnumerator ().MoveNext (), "#3");
+		}
+
+		[Test]
+		public void StringValueSerializer ()
+		{
+			var vs = ValueSerializer.GetSerializerFor (typeof (string));
+			Assert.AreEqual (String.Empty, vs.ConvertToString (String.Empty, null), "#1"); // it does not convert String.Empty to "\"\""
 		}
 
 		class MyValueSerializer : ValueSerializer
 		{
+			public Exception CallGetConvertFromException (object value)
+			{
+				return GetConvertFromException (value);
+			}
+
+			public Exception CallGetConvertToException (object value, Type destinationType)
+			{
+				return GetConvertToException (value, destinationType);
+			}
 		}
 	}
 }

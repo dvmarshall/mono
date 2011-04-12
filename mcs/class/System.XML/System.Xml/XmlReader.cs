@@ -862,6 +862,7 @@ namespace System.Xml
 		{
 			if (ReadState != ReadState.Interactive)
 				return false;
+			MoveToElement ();
 			int depth = Depth;
 			Skip ();
 			for (; !EOF && depth <= Depth; Skip ())
@@ -971,7 +972,10 @@ namespace System.Xml
 
 		public virtual object ReadElementContentAs (Type type, IXmlNamespaceResolver resolver, string localName, string namespaceURI)
 		{
+			bool isEmpty = IsEmptyElement;
 			ReadStartElement (localName, namespaceURI);
+			if (isEmpty)
+				return ValueAs (String.Empty, type, resolver, false);
 			object obj = ReadContentAs (type, resolver);
 			ReadEndElement ();
 			return obj;
@@ -1002,6 +1006,10 @@ namespace System.Xml
 					else
 						return XmlQualifiedName.Parse (text, this, true);
 				}
+				if (type == typeof (Uri))
+					return XmlConvert.ToUri (text);
+				if (type == typeof (TimeSpan))
+					return XmlConvert.ToTimeSpan (text);
 				if (type == typeof (DateTimeOffset))
 					return XmlConvert.ToDateTimeOffset (text);
 

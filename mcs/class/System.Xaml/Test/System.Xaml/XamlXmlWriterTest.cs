@@ -25,6 +25,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.IO;
+using System.Linq;
 using System.Reflection;
 using System.Windows.Markup;
 using System.Xaml;
@@ -246,6 +247,7 @@ namespace MonoTests.System.Xaml
 		}
 
 		[Test]
+		[Category ("NotWorking")] // This is an abnormal operation and I cannot completely care about such operations.
 		public void ValueAfterObject2 ()
 		{
 			string xml = @"<?xml version='1.0' encoding='utf-16'?><String xmlns='http://schemas.microsoft.com/winfx/2006/xaml'><String.Length>foo<String />foo</String.Length></String>";
@@ -284,13 +286,13 @@ namespace MonoTests.System.Xaml
 
 		[Test]
 		[ExpectedException (typeof (ArgumentException))]
-		public void WriteValueTypeMismatch ()
+		public void WriteValueTypeNonString ()
 		{
 			var sw = new StringWriter ();
 			var xw = new XamlXmlWriter (sw, sctx, null);
 			xw.WriteStartObject (xt);
 			xw.WriteStartMember (xm);
-			xw.WriteValue (5);
+			xw.WriteValue (5); // even the type matches the member type, writing non-string value is rejected.
 		}
 
 		[Test]
@@ -317,7 +319,6 @@ namespace MonoTests.System.Xaml
 
 		[Test]
 		[ExpectedException (typeof (XamlXmlWriterException))]
-		[Category ("NotWorking")] // it raises ArgumentException earlier, which should not matter.
 		public void WriteValueList ()
 		{
 			var sw = new StringWriter ();
@@ -417,6 +418,7 @@ namespace MonoTests.System.Xaml
 		}
 
 		[Test]
+		[Category ("NotWorking")]
 		public void ValueThenStartObject ()
 		{
 			string xml = @"<?xml version='1.0' encoding='utf-16'?><String xmlns='http://schemas.microsoft.com/winfx/2006/xaml'><String.Length>foo<String /></String.Length></String>";
@@ -425,7 +427,7 @@ namespace MonoTests.System.Xaml
 			xw.WriteStartObject (xt);
 			xw.WriteStartMember (xm);
 			xw.WriteValue ("foo");
-			xw.WriteStartObject (xt);
+			xw.WriteStartObject (xt); // looks like it is ignored. It is weird input anyways.
 			xw.Close ();
 			Assert.AreEqual (xml, sw.ToString ().Replace ('"', '\''), "#1");
 		}
@@ -606,5 +608,382 @@ namespace MonoTests.System.Xaml
 			w.Close ();
 			Assert.AreEqual ("foo", w.Result, "#1");
 		}
+
+		[Test]
+		public void ConstructorArguments ()
+		{
+			string xml = String.Format (@"<?xml version='1.0' encoding='utf-16'?><ArgumentAttributed xmlns='clr-namespace:MonoTests.System.Xaml;assembly={0}' xmlns:x='http://schemas.microsoft.com/winfx/2006/xaml'><x:Arguments><x:String>xxx</x:String><x:String>yyy</x:String></x:Arguments></ArgumentAttributed>",  GetType ().Assembly.GetName ().Name);
+			Assert.IsFalse (sctx.FullyQualifyAssemblyNamesInClrNamespaces, "premise0");
+			var r = new XamlObjectReader (new ArgumentAttributed ("xxx", "yyy"), sctx);
+			var sw = new StringWriter ();
+			var w = new XamlXmlWriter (sw, sctx, null);
+			XamlServices.Transform (r, w);
+			Assert.AreEqual (xml, sw.ToString ().Replace ('"', '\''), "#1");
+		}
+
+		[Test]
+		public void WriteValueAsString ()
+		{
+			var sw = new StringWriter ();
+			var xw = new XamlXmlWriter (sw, sctx, null);
+			var xt = sctx.GetXamlType (typeof (TestXmlWriterClass1));
+			xw.WriteStartObject (xt);
+			xw.WriteStartMember (xt.GetMember ("Foo"));
+			xw.WriteValue ("50");
+			xw.Close ();
+			string xml = String.Format (@"<?xml version='1.0' encoding='utf-16'?><TestXmlWriterClass1 xmlns='clr-namespace:MonoTests.System.Xaml;assembly={0}' xmlns:x='http://schemas.microsoft.com/winfx/2006/xaml'></TestXmlWriterClass1>",  GetType ().Assembly.GetName ().Name);
+		}
+
+		string ReadXml (string name)
+		{
+			return File.ReadAllText ("Test/XmlFiles/" + name).Trim ().Replace ("\r\n", "\n").Replace ("\n", Environment.NewLine);
+		}
+
+		[Test]
+		public void Write_String ()
+		{
+			Assert.AreEqual (ReadXml ("String.xml"), XamlServices.Save ("foo"), "#1");
+		}
+
+		[Test]
+		public void Write_Int32 ()
+		{
+			Assert.AreEqual (ReadXml ("Int32.xml"), XamlServices.Save (5), "#1");
+		}
+
+		[Test]
+		public void Write_DateTime ()
+		{
+			Assert.AreEqual (ReadXml ("DateTime.xml"), XamlServices.Save (new DateTime (2010, 4, 14)), "#1");
+		}
+
+		[Test]
+		public void Write_TimeSpan ()
+		{
+			Assert.AreEqual (ReadXml ("TimeSpan.xml"), XamlServices.Save (TimeSpan.FromMinutes (7)), "#1");
+		}
+
+		[Test]
+		public void Write_Uri ()
+		{
+			Assert.AreEqual (ReadXml ("Uri.xml"), XamlServices.Save (new Uri ("urn:foo")), "#1");
+		}
+
+		[Test]
+		public void Write_Null ()
+		{
+			Assert.AreEqual (ReadXml ("NullExtension.xml"), XamlServices.Save (null), "#1");
+		}
+
+		[Test]
+		public void Write_NullExtension ()
+		{
+			Assert.AreEqual (ReadXml ("NullExtension.xml"), XamlServices.Save (new NullExtension ()), "#1");
+		}
+
+		[Test]
+		public void Write_Type ()
+		{
+			Assert.AreEqual (ReadXml ("Type.xml").Trim (), XamlServices.Save (typeof (int)), "#1");
+		}
+
+		[Test]
+		public void Write_Type2 ()
+		{
+			Assert.AreEqual (ReadXml ("Type2.xml").Trim (), XamlServices.Save (typeof (TestClass1)), "#1");
+		}
+
+		[Test]
+		public void Write_Guid ()
+		{
+			Assert.AreEqual (ReadXml ("Guid.xml").Trim (), XamlServices.Save (Guid.Parse ("9c3345ec-8922-4662-8e8d-a4e41f47cf09")), "#1");
+		}
+
+		[Test]
+		public void Write_StaticExtension ()
+		{
+			Assert.AreEqual (ReadXml ("StaticExtension.xml").Trim (), XamlServices.Save (new StaticExtension ("FooBar")), "#1");
+		}
+
+		[Test]
+		public void Write_StaticExtension2 ()
+		{
+			Assert.AreEqual (ReadXml ("StaticExtension.xml").Trim (), XamlServices.Save (new StaticExtension () { Member = "FooBar"}), "#1");
+		}
+
+		[Test]
+		public void Write_Reference ()
+		{
+			Assert.AreEqual (ReadXml ("Reference.xml").Trim (), XamlServices.Save (new Reference ("FooBar")), "#1");
+		}
+
+		[Test]
+		public void Write_ArrayInt32 ()
+		{
+			Assert.AreEqual (ReadXml ("Array_Int32.xml").Trim (), XamlServices.Save (new int [] {4, -5, 0, 255, int.MaxValue}), "#1");
+		}
+
+		[Test]
+		public void Write_ListInt32 ()
+		{
+			Assert.AreEqual (ReadXml ("List_Int32.xml").Trim (), XamlServices.Save (new int [] {5, -3, int.MaxValue, 0}.ToList ()), "#1");
+		}
+
+		[Test]
+		public void Write_ListInt32_2 ()
+		{
+			var obj = new List<int> (new int [0]) { Capacity = 0 }; // set explicit capacity for trivial implementation difference
+			Assert.AreEqual (ReadXml ("List_Int32_2.xml").Trim (), XamlServices.Save (obj), "#1");
+		}
+
+		[Test]
+		public void Write_ListType ()
+		{
+			var obj = new List<Type> (new Type [] {typeof (int), typeof (Dictionary<Type, XamlType>)}) { Capacity = 2 };
+			Assert.AreEqual (ReadXml ("List_Type.xml").Trim (), XamlServices.Save (obj), "#1");
+		}
+
+		[Test]
+		public void Write_ListArray ()
+		{
+			var obj = new List<Array> (new Array [] { new int [] { 1,2,3}, new string [] { "foo", "bar", "baz" }}) { Capacity = 2 };
+			Assert.AreEqual (ReadXml ("List_Array.xml").Trim (), XamlServices.Save (obj), "#1");
+		}
+
+		[Test]
+		public void Write_DictionaryInt32String ()
+		{
+			var dic = new Dictionary<int,string> ();
+			dic.Add (0, "foo");
+			dic.Add (5, "bar");
+			dic.Add (-2, "baz");
+			Assert.AreEqual (ReadXml ("Dictionary_Int32_String.xml").Trim (), XamlServices.Save (dic), "#1");
+		}
+
+		[Test]
+		public void Write_DictionaryStringType ()
+		{
+			var dic = new Dictionary<string,Type> ();
+			dic.Add ("t1", typeof (int));
+			dic.Add ("t2", typeof (int []));
+			dic.Add ("t3", typeof (int?));
+			dic.Add ("t4", typeof (List<int>));
+			dic.Add ("t5", typeof (Dictionary<int,DateTime>));
+			dic.Add ("t6", typeof (List<KeyValuePair<int,DateTime>>));
+			Assert.AreEqual (ReadXml ("Dictionary_String_Type.xml").Trim (), XamlServices.Save (dic), "#1");
+		}
+
+		[Test]
+		[ExpectedException (typeof (XamlXmlWriterException))]
+		public void Write_PositionalParameters1 ()
+		{
+			// PositionalParameters can only be written when the 
+			// instance is NOT the root object.
+			//
+			// A single positional parameter can be written as an 
+			// attribute, but there are two in PositionalParameters1.
+			//
+			// A default constructor could be used to not use
+			// PositionalParameters, but there isn't in this type.
+			var obj = new PositionalParametersClass1 ("foo", 5);
+			XamlServices.Save (obj);
+		}
+
+		[Test]
+		public void Write_PositionalParameters1Wrapper ()
+		{
+			// Unlike the above case, this has the wrapper object and hence PositionalParametersClass1 can be written as an attribute (markup extension)
+			var obj = new PositionalParametersWrapper ("foo", 5);
+			Assert.AreEqual (ReadXml ("PositionalParametersWrapper.xml").Trim (), XamlServices.Save (obj), "#1");
+		}
+		
+		[Test]
+		public void Write_ArgumentAttributed ()
+		{
+			var obj = new ArgumentAttributed ("foo", "bar");
+			Assert.AreEqual (ReadXml ("ArgumentAttributed.xml").Trim (), XamlServices.Save (obj), "#1");
+		}
+
+		[Test]
+		public void Write_ArrayExtension2 ()
+		{
+			var obj = new ArrayExtension (typeof (int));
+			Assert.AreEqual (ReadXml ("ArrayExtension2.xml").Trim (), XamlServices.Save (obj), "#1");
+		}
+
+		[Test]
+		public void Write_ArrayList ()
+		{
+			var obj = new ArrayList (new int [] {5, -3, 0});
+			Assert.AreEqual (ReadXml ("ArrayList.xml").Trim (), XamlServices.Save (obj), "#1");
+		}
+
+		[Test]
+		public void ComplexPositionalParameterWrapper ()
+		{
+			var obj = new ComplexPositionalParameterWrapper () { Param = new ComplexPositionalParameterClass (new ComplexPositionalParameterValue () { Foo = "foo" })};
+			Assert.AreEqual (ReadXml ("ComplexPositionalParameterWrapper.xml").Trim (), XamlServices.Save (obj), "#1");
+		}
+
+		[Test]
+		public void Write_ListWrapper ()
+		{
+			var obj = new ListWrapper (new List<int> (new int [] {5, -3, 0}) { Capacity = 3}); // set explicit capacity for trivial implementation difference
+			Assert.AreEqual (ReadXml ("ListWrapper.xml").Trim (), XamlServices.Save (obj), "#1");
+		}
+
+		[Test]
+		public void Write_ListWrapper2 ()
+		{
+			var obj = new ListWrapper2 (new List<int> (new int [] {5, -3, 0}) { Capacity = 3}); // set explicit capacity for trivial implementation difference
+			Assert.AreEqual (ReadXml ("ListWrapper2.xml").Trim (), XamlServices.Save (obj), "#1");
+		}
+
+		[Test]
+		public void Write_MyArrayExtension ()
+		{
+			var obj = new MyArrayExtension (new int [] {5, -3, 0});
+			Assert.AreEqual (ReadXml ("MyArrayExtension.xml").Trim (), XamlServices.Save (obj), "#1");
+		}
+
+		[Test]
+		public void Write_MyArrayExtensionA ()
+		{
+			var obj = new MyArrayExtensionA (new int [] {5, -3, 0});
+			Assert.AreEqual (ReadXml ("MyArrayExtensionA.xml").Trim (), XamlServices.Save (obj), "#1");
+		}
+
+		[Test]
+		public void Write_MyExtension ()
+		{
+			var obj = new MyExtension () { Foo = typeof (int), Bar = "v2", Baz = "v7"};
+			Assert.AreEqual (ReadXml ("MyExtension.xml").Trim (), XamlServices.Save (obj), "#1");
+		}
+
+		[Test]
+		public void Write_MyExtension2 ()
+		{
+			var obj = new MyExtension2 () { Foo = typeof (int), Bar = "v2"};
+			Assert.AreEqual (ReadXml ("MyExtension2.xml").Trim (), XamlServices.Save (obj), "#1");
+		}
+
+		[Test]
+		public void Write_MyExtension3 ()
+		{
+			var obj = new MyExtension3 () { Foo = typeof (int), Bar = "v2"};
+			Assert.AreEqual (ReadXml ("MyExtension3.xml").Trim (), XamlServices.Save (obj), "#1");
+		}
+
+		[Test]
+		public void Write_MyExtension4 ()
+		{
+			var obj = new MyExtension4 () { Foo = typeof (int), Bar = "v2"};
+			Assert.AreEqual (ReadXml ("MyExtension4.xml").Trim (), XamlServices.Save (obj), "#1");
+		}
+
+		[Test]
+		public void Write_MyExtension6 ()
+		{
+			var obj = new MyExtension6 ("foo");
+			Assert.AreEqual (ReadXml ("MyExtension6.xml").Trim (), XamlServices.Save (obj), "#1");
+		}
+		
+		[Test]
+		public void Write_PropertyDefinition ()
+		{
+			var obj = new PropertyDefinition () { Modifier = "protected", Name = "foo", Type = XamlLanguage.String };
+			Assert.AreEqual (ReadXml ("PropertyDefinition.xml").Trim (), XamlServices.Save (obj), "#1");
+		}
+		
+		[Test]
+		public void Write_StaticExtensionWrapper ()
+		{
+			var obj = new StaticExtensionWrapper () { Param = new StaticExtension ("StaticExtensionWrapper.Foo") };
+			Assert.AreEqual (ReadXml ("StaticExtensionWrapper.xml").Trim (), XamlServices.Save (obj), "#1");
+		}
+
+		[Test]
+		public void Write_TypeExtensionWrapper ()
+		{
+			var obj = new TypeExtensionWrapper () { Param = new TypeExtension ("Foo") };
+			Assert.AreEqual (ReadXml ("TypeExtensionWrapper.xml").Trim (), XamlServices.Save (obj), "#1");
+		}
+
+		[Test]
+		public void Write_NamedItems ()
+		{
+			// foo
+			// - bar
+			// -- foo
+			// - baz
+			var obj = new NamedItem ("foo");
+			var obj2 = new NamedItem ("bar");
+			obj.References.Add (obj2);
+			obj.References.Add (new NamedItem ("baz"));
+			obj2.References.Add (obj);
+
+			Assert.AreEqual (ReadXml ("NamedItems.xml").Trim (), XamlServices.Save (obj), "#1");
+		}
+
+		[Test]
+		public void Write_NamedItems2 ()
+		{
+			// i1
+			// - i2
+			// -- i3
+			// - i4
+			// -- i3
+			var obj = new NamedItem2 ("i1");
+			var obj2 = new NamedItem2 ("i2");
+			var obj3 = new NamedItem2 ("i3");
+			var obj4 = new NamedItem2 ("i4");
+			obj.References.Add (obj2);
+			obj.References.Add (obj4);
+			obj2.References.Add (obj3);
+			obj4.References.Add (obj3);
+
+			Assert.AreEqual (ReadXml ("NamedItems2.xml").Trim (), XamlServices.Save (obj), "#1");
+		}
+
+		[Test]
+		public void Write_XmlSerializableWrapper ()
+		{
+			var obj = new XmlSerializableWrapper (new XmlSerializable ("<root/>"));
+			Assert.AreEqual (ReadXml ("XmlSerializableWrapper.xml").Trim (), XamlServices.Save (obj), "#1");
+		}
+
+		[Test]
+		public void Write_XmlSerializable ()
+		{
+			var obj = new XmlSerializable ("<root/>");
+			Assert.AreEqual (ReadXml ("XmlSerializable.xml").Trim (), XamlServices.Save (obj), "#1");
+		}
+
+		[Test]
+		public void Write_ListXmlSerializable ()
+		{
+			var obj = new List<XmlSerializable> ();
+			obj.Add (new XmlSerializable ("<root/>"));
+			Assert.AreEqual (ReadXml ("List_XmlSerializable.xml").Trim (), XamlServices.Save (obj), "#1");
+		}
+
+		[Test]
+		public void Write_AttachedProperty ()
+		{
+			var obj = new AttachedWrapper ();
+			Attachable.SetFoo (obj, "x");
+			Attachable.SetFoo (obj.Value, "y");
+			try {
+				Assert.AreEqual (ReadXml ("AttachedProperty.xml").Trim (), XamlServices.Save (obj), "#1");
+			} finally {
+				Attachable.SetFoo (obj, null);
+				Attachable.SetFoo (obj.Value, null);
+			}
+		}
+	}
+
+	public class TestXmlWriterClass1
+	{
+		public int Foo { get; set; }
 	}
 }

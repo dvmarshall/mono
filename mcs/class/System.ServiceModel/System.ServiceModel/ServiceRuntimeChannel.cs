@@ -35,20 +35,28 @@ using System.ServiceModel.MonoInternal;
 
 namespace System.ServiceModel.MonoInternal
 {
+#if DISABLE_REAL_PROXY
 	// FIXME: this is a (similar) workaround for bug 571907.
-	public class DuplexServiceRuntimeChannel : ServiceRuntimeChannel, IDuplexContextChannel
+	public
+#endif
+	class DuplexServiceRuntimeChannel : ServiceRuntimeChannel, IDuplexContextChannel, IInternalContextChannel
 	{
 		public DuplexServiceRuntimeChannel (IChannel channel, DispatchRuntime runtime)
 			: base (channel, runtime)
 		{
+			if (channel == null)
+				throw new ArgumentNullException ("channel");
 			// setup callback ClientRuntimeChannel.
 			var crt = runtime.CallbackClientRuntime;
-			var cd = ContractDescriptionGenerator.GetCallbackContract (runtime.Type, crt.CallbackClientType);
-			client = new ClientRuntimeChannel (crt, cd, this.DefaultOpenTimeout, this.DefaultCloseTimeout, channel, null,
+			if (crt == null)
+				throw new InvalidOperationException ("The DispatchRuntime does not have CallbackClientRuntime");
+			contract = ContractDescriptionGenerator.GetCallbackContract (runtime.Type, crt.CallbackClientType);
+			client = new ClientRuntimeChannel (crt, contract, this.DefaultOpenTimeout, this.DefaultCloseTimeout, channel, null,
 							   runtime.ChannelDispatcher.MessageVersion, this.RemoteAddress, null);
 		}
 
 		ClientRuntimeChannel client;
+		ContractDescription contract;
 
 		public override bool AllowOutputBatching {
 			get { return client.AllowOutputBatching; }
@@ -66,6 +74,10 @@ namespace System.ServiceModel.MonoInternal
 		}
 
 		public InstanceContext CallbackInstance { get; set; }
+
+		public ContractDescription Contract {
+			get { return contract; }
+		}
 
 		Action<TimeSpan> session_shutdown_delegate;
 
@@ -104,8 +116,11 @@ namespace System.ServiceModel.MonoInternal
 		}
 	}
 
+#if DISABLE_REAL_PROXY
 	// FIXME: this is a (similar) workaround for bug 571907.
-	public class ServiceRuntimeChannel : CommunicationObject, IServiceChannel
+	public
+#endif
+	class ServiceRuntimeChannel : CommunicationObject, IServiceChannel
 	{
 		IExtensionCollection<IContextChannel> extensions;
 		readonly IChannel channel;
@@ -114,6 +129,7 @@ namespace System.ServiceModel.MonoInternal
 		public ServiceRuntimeChannel (IChannel channel, DispatchRuntime runtime)
 		{
 			this.channel = channel;
+			channel.Closing += delegate { Close (); };
 			this.runtime = runtime;
 		}
 
@@ -193,7 +209,8 @@ namespace System.ServiceModel.MonoInternal
 
 		protected override void OnClose (TimeSpan timeout)
 		{
-			channel.Close (timeout);
+			if (channel.State == CommunicationState.Opened)
+				channel.Close (timeout);
 		}
 
 		protected override IAsyncResult OnBeginOpen (
@@ -209,7 +226,8 @@ namespace System.ServiceModel.MonoInternal
 
 		protected override void OnOpen (TimeSpan timeout)
 		{
-			channel.Open (timeout);
+			if (channel.State == CommunicationState.Created)
+				channel.Open (timeout);
 		}
 
 		// IChannel

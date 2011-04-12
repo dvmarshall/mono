@@ -238,6 +238,7 @@ typedef struct MonoCompileArch {
 	guint		spillvar_offset;
 	guint		spillvar_offset_float;
 	guint		tracing_offset;
+	guint		long_branch;
 } MonoCompileArch;
 
 #if SIZEOF_REGISTER == 4
@@ -282,7 +283,6 @@ typedef struct MonoCompileArch {
 #define MONO_ARCH_HAVE_DECOMPOSE_LONG_OPTS 1
 
 #define MONO_ARCH_HAVE_GENERALIZED_IMT_THUNK 1
-#define MONO_ARCH_HAVE_THROW_CORLIB_EXCEPTION 1
 
 /* XXX - a mystery, but it works */
 #define MONO_GET_CONTEXT \
@@ -360,6 +360,8 @@ typedef struct {
 		MONO_CONTEXT_SET_IP ((ctx),ra);	\
 		MONO_CONTEXT_SET_SP ((ctx), MONO_CONTEXT_GET_BP (ctx));	\
 	} while (0)
+
+#define MONO_ARCH_INIT_TOP_LMF_ENTRY(lmf) do { (lmf)->ebp = -1; } while (0)
 
 /* re-attaches with gdb - sometimes causes executable to hang */
 #undef HAVE_BACKTRACE_SYMBOLS

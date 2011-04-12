@@ -53,13 +53,18 @@ namespace System.ServiceModel.Dispatcher
 
 		OperationContext CreateOperationContext (Message incoming)
 		{
-			ServiceRuntimeChannel contextChannel;
+			IContextChannel contextChannel;
 			if (dispatch_runtime.CallbackClientRuntime.CallbackClientType != null) {
-				var type = ServiceProxyGenerator.CreateCallbackProxyType (dispatch_runtime.Type, dispatch_runtime.CallbackClientRuntime.CallbackClientType);
+#if DISABLE_REAL_PROXY
+				var type = ServiceProxyGenerator.CreateCallbackProxyType (dispatch_runtime, dispatch_runtime.CallbackClientRuntime.CallbackClientType);
 				contextChannel = (ServiceRuntimeChannel) Activator.CreateInstance (type, new object [] {reply_or_input, dispatch_runtime});
+#else
+				contextChannel = (IContextChannel) new ClientRealProxy (dispatch_runtime.CallbackClientRuntime.CallbackClientType, new DuplexServiceRuntimeChannel (reply_or_input, dispatch_runtime), true).GetTransparentProxy ();
+#endif
 			}
 			else
 				contextChannel = new ServiceRuntimeChannel (reply_or_input, dispatch_runtime);
+			contextChannel.Open (); // FIXME: timeout?
 			OperationContext opCtx = new OperationContext (contextChannel);
 			opCtx.IncomingMessage = incoming;
 			opCtx.EndpointDispatcher = dispatch_runtime.EndpointDispatcher;

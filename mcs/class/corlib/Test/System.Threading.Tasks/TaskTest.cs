@@ -69,9 +69,9 @@ namespace MonoTests.System.Threading.Tasks
 				
 				int index = Task.WaitAny(tasks);
 				
-				Assert.IsTrue (flag == 1, "#1");
-				Assert.AreEqual (1, finished, "#2");
 				Assert.AreNotEqual (-1, index, "#3");
+				Assert.AreEqual (1, flag, "#1");
+				Assert.AreEqual (1, finished, "#2");
 				
 				Task.WaitAll (tasks);
 			});
@@ -110,8 +110,8 @@ namespace MonoTests.System.Threading.Tasks
 			}
 			
 			Assert.IsNotNull (ex, "#1");
-			Assert.IsInstanceOfType (typeof(AggregateException), t.Exception, "#2");
-			Assert.AreEqual (t.Exception, ex, "#3");
+			Assert.IsInstanceOfType (typeof(AggregateException), ex, "#2");
+			Assert.IsNull (t.Exception, "#3");
 			
 			AggregateException aggr = (AggregateException)ex;
 			Assert.AreEqual (1, aggr.InnerExceptions.Count, "#4");
@@ -126,9 +126,8 @@ namespace MonoTests.System.Threading.Tasks
 				
 				Task t = Task.Factory.StartNew(delegate { });
 				Task cont = t.ContinueWith(delegate { result = true; }, TaskContinuationOptions.None);
-				t.Wait();
-				cont.Wait();
-				
+				Assert.IsTrue (t.Wait (2000), "First wait, (status, {0})", t.Status);
+				Assert.IsTrue (cont.Wait(2000), "Cont wait, (result, {0}) (parent status, {2}) (status, {1})", result, cont.Status, t.Status);
 				Assert.IsNull(cont.Exception, "#1");
 				Assert.IsNotNull(cont, "#2");
 				Assert.IsTrue(result, "#3");
@@ -163,7 +162,8 @@ namespace MonoTests.System.Threading.Tasks
 				Task t = new Task(delegate { taskResult = true; }, src.Token);
 				src.Cancel ();
 				
-				Task cont = t.ContinueWith (delegate { result = true; }, TaskContinuationOptions.OnlyOnCanceled);
+				Task cont = t.ContinueWith (delegate { result = true; },
+				                            TaskContinuationOptions.OnlyOnCanceled | TaskContinuationOptions.ExecuteSynchronously);
 
 				t.Start();
 				cont.Wait();
@@ -193,6 +193,21 @@ namespace MonoTests.System.Threading.Tasks
 				Assert.IsNotNull (cont, "#2");
 				Assert.IsTrue (result, "#3");
 			});
+		}
+
+		[Test]
+		public void ContinueWithChildren ()
+		{
+			ParallelTestHelper.Repeat (delegate {
+			    bool result = false;
+
+			    var t = Task.Factory.StartNew (() => Task.Factory.StartNew (() => Thread.Sleep (100), TaskCreationOptions.AttachedToParent));
+			    t.ContinueWith (_ => result = true);
+			    while (!t.IsCompleted)
+				    Thread.Sleep (200);
+
+			    Assert.IsTrue (result);
+			}, 2);
 		}
 
 		[TestAttribute]
@@ -249,7 +264,17 @@ namespace MonoTests.System.Threading.Tasks
 				Assert.IsTrue(r3, "#2");
 				Assert.IsTrue(r1, "#3");
 				Assert.AreEqual (TaskStatus.RanToCompletion, t.Status, "#4");
-			}, 10);
+				}, 10);
+		}
+
+		[Test]
+		public void ExecuteSynchronouslyTest ()
+		{
+			var val = 0;
+			Task t = new Task (() => { Thread.Sleep (100); val = 1; });
+			t.RunSynchronously ();
+
+			Assert.AreEqual (1, val);
 		}
 	}
 }

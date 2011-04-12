@@ -184,6 +184,8 @@ System.Runtime.Remoting.Contexts/SynchronizationAttributeTest.cs
 System.Runtime.Remoting.Metadata.W3cXsd2001/SoapHexBinaryTest.cs
 System.Runtime.Serialization/FormatterServicesTests.cs
 System.Runtime.Serialization/ObjectIDGeneratorTests.cs
+System.Runtime.Serialization/SerializationBinderTest.cs
+System.Runtime.Serialization/SerializationInfoTest.cs
 System.Runtime.Serialization/SerializationTest.cs
 System.Runtime.Serialization/SerializationTest2.cs
 System.Runtime.Serialization/SerializationCallbackTest.cs
@@ -196,6 +198,9 @@ System.Runtime.Versioning/TargetFrameworkAttributeTest.cs
 System.Runtime.Versioning/VersioningHelperTest.cs
 System/SByteTest.cs
 System.Security/CodeAccessPermissionTest.cs
+System.Security.AccessControl/CommonAceTest.cs
+System.Security.AccessControl/RawAclTest.cs
+System.Security.AccessControl/RawSecurityDescriptorTest.cs
 System.Security.Cryptography/AllTests2.cs
 System.Security.Cryptography/AsymmetricAlgorithmTest.cs
 System.Security.Cryptography/CipherModeTest.cs
@@ -329,6 +334,8 @@ System.Security.Policy/ZoneTest.cs
 System.Security.Policy/ZoneMembershipConditionTest.cs
 System.Security.Principal/GenericIdentityTest.cs
 System.Security.Principal/GenericPrincipalTest.cs
+System.Security.Principal/NTAccountTest.cs
+System.Security.Principal/SecurityIdentifierTest.cs
 System.Security.Principal/WindowsIdentityTest.cs
 System.Security.Principal/WindowsPrincipalTest.cs
 System.Security/SecureStringTest.cs
@@ -436,8 +443,7 @@ System.Threading.Tasks/TaskCompletionSourceTests.cs
 System.Threading.Tasks/ParallelTestHelper.cs
 System.Threading.Tasks/ParallelTests.cs
 System.Collections.Concurrent/ParallelConcurrentStackTests.cs
-System.Collections.Concurrent/ConcurrentSkipListTests.cs
-../System.Collections.Concurrent/ConcurrentSkipList.cs
+System.Collections.Concurrent/PartitionerTests.cs
 System.Collections.Concurrent/ConcurrentQueueTests.cs
 System.Collections.Concurrent/ConcurrentBagTests.cs
 System.Collections.Concurrent/ConcurrentStackTests.cs

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Runtime.CompilerServices;
 
 class Tests {
 
@@ -445,6 +446,29 @@ class Tests {
 		return 0;
 	}
 
+	public static int test_0_generic_virtual_on_interfaces_ref () {
+		Foo<string>.count1 = 0;
+		Foo<string>.count2 = 0;
+		Foo<string>.count3 = 0;
+		Foo<string>.count4 = 0;
+
+		IFoo f = new Foo<string> ("");
+		for (int i = 0; i < 1000; ++i) {
+			f.Bar <string> ();
+			f.Bar <object> ();
+			f.NonGeneric ();
+		}
+
+		if (Foo<string>.count2 != 1000)
+			return 2;
+		if (Foo<string>.count3 != 1000)
+			return 3;
+		if (Foo<string>.count4 != 1000)
+			return 4;
+
+		return 0;
+	}
+
 	//repro for #505375
 	[Category ("!FULLAOT")]
 	public static int test_2_cprop_bug () {
@@ -490,6 +514,11 @@ class Tests {
 		return l.Count;
 	}
 
+	public static int test_0_fullaot_comparer_t_2 () {
+		var l = new Dictionary <TimeSpan, int> ();
+		return l.Count;
+	}
+
 	static void enumerate<T> (IEnumerable<T> arr) {
 		foreach (var o in arr)
 			;
@@ -526,6 +555,29 @@ class Tests {
 		new Gamma<string>();
 
 		return cctor_count;
+	}
+
+	static int cctor_count2 = 0;
+
+	class ServiceController<T> {
+		static ServiceController () {
+			cctor_count2 ++;
+		}
+
+		public ServiceController () {
+		}
+	}
+
+	static ServiceController<T> Create<T>() {
+		return new ServiceController<T>();
+	}
+
+	// #631409
+	public static int test_2_generic_class_init_gshared_ctor_from_gshared () {
+		Create<object> ();
+		Create<string> ();
+
+		return cctor_count2;
 	}
 
 	public static Type get_type<T> () {
@@ -579,6 +631,40 @@ class Tests {
 		if (p.Key != "FOO" || p.Value != typeof (int))
 			return 1;
 
+		return 0;
+	}
+
+
+	struct RecStruct<T> {
+		public void foo (RecStruct<RecStruct<T>> baz) {
+		}
+	}
+
+	public static int test_0_infinite_generic_recursion () {
+		// Check that the AOT compile can deal with infinite generic recursion through
+		// parameter types
+		RecStruct<int> bla;
+
+		return 0;
+	}
+
+	struct FooStruct {
+	}
+
+	bool IsNull2 <T> (object value) where T : struct {
+		T? item = (T?) value;
+
+		if (item.HasValue)
+			return false;
+
+		return true;
+	}
+
+	public static int test_0_full_aot_nullable_unbox_from_gshared_code () {
+		if (!new Tests ().IsNull2<FooStruct> (null))
+			return 1;
+		if (new Tests ().IsNull2<FooStruct> (new FooStruct ()))
+			return 2;
 		return 0;
 	}
 
@@ -710,7 +796,7 @@ class Tests {
 			GenericEvent (this);
 		}
 
-		public static int count1, count2, count3;
+		public static int count1, count2, count3, count4;
 
 		public void NonGeneric () {
 			count3 ++;
@@ -721,6 +807,8 @@ class Tests {
 				count1 ++;
 			else if (typeof (T) == typeof (string))
 				count2 ++;
+			else if (typeof (T) == typeof (object))
+				count4 ++;
 			return null;
 		}
 	}
@@ -761,5 +849,29 @@ class Tests {
 	
 	static T Unbox <T> (object o) {
 		return (T) o;
+	}
+
+	interface IDefaultRetriever
+	{
+		T GetDefault<T>();
+	}
+
+	class DefaultRetriever : IDefaultRetriever
+	{
+		[MethodImpl(MethodImplOptions.Synchronized)]
+		public T GetDefault<T>()
+		{
+			return default(T);
+		}
+	}
+
+	[Category ("!FULLAOT")]
+	public static int test_0_regress_668095_synchronized_gshared () {
+		return DoSomething (new DefaultRetriever ());
+	}
+
+    static int DoSomething(IDefaultRetriever foo) {
+		int result = foo.GetDefault<int>();
+		return result;
 	}
 }

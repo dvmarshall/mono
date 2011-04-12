@@ -1486,7 +1486,7 @@ class Tests {
 			val = d / q;
 		} catch (DivideByZeroException) {
 			/* wrong exception */
-		} catch (ArithmeticException) {
+		} catch (OverflowException) {
 			failed = false;
 		}
 		if (failed)
@@ -1499,7 +1499,7 @@ class Tests {
 			val = d % q;
 		} catch (DivideByZeroException) {
 			/* wrong exception */
-		} catch (ArithmeticException) {
+		} catch (OverflowException) {
 			failed = false;
 		}
 		if (failed)
@@ -2240,6 +2240,8 @@ class Tests {
 
 		public static void rethrow2 () {
 			rethrow1 ();
+			/* This disables tailcall opts */
+			Console.WriteLine ();
 		}
 	}
 
@@ -2348,6 +2350,25 @@ class Tests {
 		for (int j = 0; j < 1000; j++) {
 			try {
 				throw_func (j, s);
+			}
+			catch (Exception) {
+			}
+		}
+		return (addr [0].ToInt64 () - addr [100].ToInt64 () < 100) ? 0 : 1;
+	}
+
+	static unsafe void get_sp (int i) {
+		addr [i] = new IntPtr (&i);
+	}
+
+	/* Test that the arguments to the throw trampoline are correctly popped off the stack */
+	public static int test_0_throw_unwind () {
+		addr = new IntPtr [1000];
+		S s = new S ();
+		for (int j = 0; j < 1000; j++) {
+			try {
+				get_sp (j);
+				throw new Exception ();
 			}
 			catch (Exception) {
 			}
@@ -2586,6 +2607,39 @@ class Tests {
 		}
 		catch {}
 		return (int)value;
+	}
+
+	class A {
+		public object AnObj;
+	}
+
+	public static void DoSomething (ref object o) {
+	}
+
+	public static int test_0_ldflda_null () {
+		A a = null;
+
+		try {
+			DoSomething (ref a.AnObj);
+		} catch (NullReferenceException) {
+			return 0;
+		}
+
+		return 1;
+	}
+
+	unsafe struct Foo
+	{
+		public int i;
+
+		public static Foo* pFoo;
+	}
+
+	/* MS.NET doesn't seem to throw in this case */
+	public unsafe static int test_0_ldflda_null_pointer () {
+		int* pi = &Foo.pFoo->i;
+
+		return 0;
 	}
 }
 

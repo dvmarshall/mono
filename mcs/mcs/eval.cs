@@ -9,16 +9,17 @@
 // Copyright 2001, 2002, 2003 Ximian, Inc (http://www.ximian.com)
 // Copyright 2004, 2005, 2006, 2007, 2008 Novell, Inc
 //
+
 using System;
 using System.Threading;
 using System.Collections.Generic;
 using System.Reflection;
 using System.Reflection.Emit;
 using System.IO;
-using System.Globalization;
 using System.Text;
 
-namespace Mono.CSharp {
+namespace Mono.CSharp
+{
 
 	/// <summary>
 	///   Evaluator: provides an API to evaluate C# statements and
@@ -64,6 +65,7 @@ namespace Mono.CSharp {
 		static bool inited;
 
 		static CompilerContext ctx;
+		static DynamicLoader loader;
 		
 		public static TextWriter MessageOutput = Console.Out;
 
@@ -90,6 +92,11 @@ namespace Mono.CSharp {
 			return ctx.Report.SetPrinter (report_printer);
 		}				
 
+		public static string [] InitAndGetStartupFiles (string [] args)
+		{
+			return InitAndGetStartupFiles (args, null);
+		}
+
 		/// <summary>
 		///   Optional initialization for the Evaluator.
 		/// </summary>
@@ -106,32 +113,43 @@ namespace Mono.CSharp {
 		///
 		///  This method return an array of strings that contains any
 		///  files that were specified in `args'.
+		///
+		///  If the unknownOptionParser is not null, this function is invoked
+		///  with the current args array and the index of the option that is not
+		///  known.  A value of true means that the value was processed, otherwise
+		///  it will be reported as an error
 		/// </remarks>
-		public static string [] InitAndGetStartupFiles (string [] args)
+		public static string [] InitAndGetStartupFiles (string [] args, Func<string [], int, int> unknownOptionParser)
 		{
 			lock (evaluator_lock){
 				if (inited)
 					return new string [0];
-				
-				driver = Driver.Create (args, false, new ConsoleReportPrinter ());
+
+				CompilerCallableEntryPoint.Reset ();
+				var crp = new ConsoleReportPrinter ();
+				driver = Driver.Create (args, false, unknownOptionParser, crp);
 				if (driver == null)
 					throw new Exception ("Failed to create compiler driver with the given arguments");
 
-				RootContext.ToplevelTypes = new ModuleCompiled (ctx, true);
-				
-				driver.ProcessDefaultConfig ();
+				crp.Fatal = driver.fatal_errors;
+				ctx = driver.ctx;
 
+				RootContext.ToplevelTypes = new ModuleContainer (ctx);
+				
 				var startup_files = new List<string> ();
 				foreach (CompilationUnit file in Location.SourceFiles)
 					startup_files.Add (file.Path);
 				
-				CompilerCallableEntryPoint.Reset ();
-				RootContext.ToplevelTypes = new ModuleCompiled (ctx, true);
-				/*var ctypes = */TypeManager.InitCoreTypes ();
+				CompilerCallableEntryPoint.PartialReset ();
 
-				Import.Initialize ();
-				driver.LoadReferences ();
-				TypeManager.InitOptionalCoreTypes (ctx);
+				var importer = new ReflectionImporter (ctx.BuildinTypes);
+				loader = new DynamicLoader (importer, ctx);
+
+				RootContext.ToplevelTypes.SetDeclaringAssembly (new AssemblyDefinitionDynamic (RootContext.ToplevelTypes, "temp"));
+
+				loader.LoadReferences (RootContext.ToplevelTypes);
+				ctx.BuildinTypes.CheckDefinitions (RootContext.ToplevelTypes);
+				RootContext.ToplevelTypes.InitializePredefinedTypes ();
 
 				RootContext.EvalMode = true;
 				inited = true;
@@ -148,35 +166,11 @@ namespace Mono.CSharp {
 		static void Reset ()
 		{
 			CompilerCallableEntryPoint.PartialReset ();
-			RootContext.PartialReset ();
-			
-			// Workaround for API limitation where full message printer cannot be passed
-			ReportPrinter printer;
-			if (MessageOutput == Console.Out || MessageOutput == Console.Error){
-				var console_reporter = new ConsoleReportPrinter (MessageOutput);
-				console_reporter.Fatal = driver.fatal_errors;
-				printer = console_reporter;
-			} else
-				printer = new StreamReportPrinter (MessageOutput);
-
-			ctx = new CompilerContext (new Report (printer));
-			RootContext.ToplevelTypes = new ModuleCompiled (ctx, true);
-
-			//
-			// PartialReset should not reset the core types, this is very redundant.
-			//
-//			if (!TypeManager.InitCoreTypes (ctx, null))
-//				throw new Exception ("Failed to InitCoreTypes");
-//			TypeManager.InitOptionalCoreTypes (ctx);
 			
 			Location.AddFile (null, "{interactive}");
 			Location.Initialize ();
 
 			current_debug_name = "interactive" + (count++) + ".dll";
-			if (Environment.GetEnvironmentVariable ("SAVE") != null){
-				CodeGen.Init (current_debug_name, current_debug_name, false, ctx);
-			} else
-				CodeGen.InitDynamic (ctx, current_debug_name);
 		}
 
 		/// <summary>
@@ -198,7 +192,7 @@ namespace Mono.CSharp {
 				if (interactive_base_class != null)
 					return interactive_base_class;
 
-				return Import.ImportType (typeof (InteractiveBase));
+				return loader.Importer.ImportType (typeof (InteractiveBase));
 			}
 		}
 
@@ -207,8 +201,11 @@ namespace Mono.CSharp {
 			if (type == null)
 				throw new ArgumentNullException ();
 
+			if (!inited)
+				throw new Exception ("Evaluator has to be initiated before seting custom InteractiveBase class");
+
 			lock (evaluator_lock)
-				interactive_base_class = Import.ImportType (type);
+				interactive_base_class = loader.Importer.ImportType (type);
 		}
 
 		/// <summary>
@@ -258,11 +255,15 @@ namespace Mono.CSharp {
 				compiled = null;
 				return null;
 			}
-			
+
 			lock (evaluator_lock){
 				if (!inited)
 					Init ();
-				
+				else
+					ctx.Report.Printer.Reset ();
+
+			//	RootContext.ToplevelTypes = new ModuleContainer (ctx);
+
 				bool partial_input;
 				CSharpParser parser = ParseString (ParseMode.Silent, input, out partial_input);
 				if (parser == null){
@@ -278,16 +279,21 @@ namespace Mono.CSharp {
 				
 				if (!(parser_result is Class)){
 					int errors = ctx.Report.Errors;
-					
+
 					NamespaceEntry.VerifyAllUsing ();
 					if (errors == ctx.Report.Errors)
 						parser.CurrentNamespace.Extract (using_alias_list, using_list);
+					else
+						NamespaceEntry.Reset ();
 				}
 
+#if STATIC
+				throw new NotSupportedException ();
+#else
 				compiled = CompileBlock (parser_result as Class, parser.undo, ctx.Report);
+				return null;
+#endif
 			}
-			
-			return null;
 		}
 
 		/// <summary>
@@ -419,14 +425,13 @@ namespace Mono.CSharp {
 				}
 
 				try {
-					RootContext.ResolveTree ();
+					var a = new AssemblyDefinitionDynamic (RootContext.ToplevelTypes, "temp");
+					a.Create (AppDomain.CurrentDomain, AssemblyBuilderAccess.Run);
+					RootContext.ToplevelTypes.SetDeclaringAssembly (a);
+					RootContext.ToplevelTypes.Define ();
 					if (ctx.Report.Errors != 0)
 						return null;
 					
-					RootContext.PopulateTypes ();
-					if (ctx.Report.Errors != 0)
-						return null;
-
 					MethodOrOperator method = null;
 					foreach (MemberCore member in parser_result.Methods){
 						if (member.Name != "Host")
@@ -441,7 +446,7 @@ namespace Mono.CSharp {
 					BlockContext bc = new BlockContext (method, method.Block, method.ReturnType);
 
 					try {
-						method.Block.Resolve (null, bc, method.ParameterInfo, method);
+						method.Block.Resolve (null, bc, method);
 					} catch (CompletionResult cr){
 						prefix = cr.BaseText;
 						return cr.Result;
@@ -453,7 +458,7 @@ namespace Mono.CSharp {
 			}
 			return null;
 		}
-		
+
 		/// <summary>
 		///   Executes the given expression or statement.
 		/// </summary>
@@ -500,7 +505,7 @@ namespace Mono.CSharp {
 
 			return result;
 		}
-	
+
 		enum InputKind {
 			EOF,
 			StatementOrExpression,
@@ -649,7 +654,7 @@ namespace Mono.CSharp {
 			}
 			seekable.Position = 0;
 
-			CSharpParser parser = new CSharpParser (seekable, (CompilationUnit) Location.SourceFiles [0], ctx);
+			CSharpParser parser = new CSharpParser (seekable, Location.SourceFiles [0], RootContext.ToplevelTypes);
 
 			if (kind == InputKind.StatementOrExpression){
 				parser.Lexer.putback_char = Tokenizer.EvalStatementParserCharacter;
@@ -699,16 +704,21 @@ namespace Mono.CSharp {
 		//static ArrayList types = new ArrayList ();
 
 		static volatile bool invoking;
-		
+#if !STATIC		
 		static CompiledMethod CompileBlock (Class host, Undo undo, Report Report)
 		{
-			RootContext.ResolveTree ();
-			if (Report.Errors != 0){
-				undo.ExecuteUndo ();
-				return null;
+			AssemblyDefinitionDynamic assembly;
+
+			if (Environment.GetEnvironmentVariable ("SAVE") != null) {
+				assembly = new AssemblyDefinitionDynamic (RootContext.ToplevelTypes, current_debug_name, current_debug_name);
+				assembly.Importer = loader.Importer;
+			} else {
+				assembly = new AssemblyDefinitionDynamic (RootContext.ToplevelTypes, current_debug_name);
 			}
-			
-			RootContext.PopulateTypes ();
+
+			assembly.Create (AppDomain.CurrentDomain, AssemblyBuilderAccess.RunAndSave);
+			RootContext.ToplevelTypes.SetDeclaringAssembly (assembly);
+			RootContext.ToplevelTypes.Define ();
 
 			if (Report.Errors != 0){
 				undo.ExecuteUndo ();
@@ -734,16 +744,16 @@ namespace Mono.CSharp {
 					throw new Exception ("Internal error: did not find the method builder for the generated method");
 			}
 			
-			RootContext.EmitCode ();
+			RootContext.ToplevelTypes.Emit ();
 			if (Report.Errors != 0){
 				undo.ExecuteUndo ();
 				return null;
 			}
-			
-			RootContext.CloseTypes ();
+
+			RootContext.ToplevelTypes.CloseType ();
 
 			if (Environment.GetEnvironmentVariable ("SAVE") != null)
-				CodeGen.Save (current_debug_name, false, Report);
+				assembly.Save ();
 
 			if (host == null)
 				return null;
@@ -752,7 +762,7 @@ namespace Mono.CSharp {
 			// Unlike Mono, .NET requires that the MethodInfo is fetched, it cant
 			// work from MethodBuilders.   Retarded, I know.
 			//
-			var tt = CodeGen.Assembly.Builder.GetType (tb.Name);
+			var tt = assembly.Builder.GetType (tb.Name);
 			MethodInfo mi = tt.GetMethod (mb.Name);
 			
 			// Pull the FieldInfos from the type, and keep track of them
@@ -775,7 +785,7 @@ namespace Mono.CSharp {
 						}
 					}
 
-					fields [field.Name] = Tuple.Create (old.Item1, fi);
+					fields [field.Name] = Tuple.Create (field.Spec, fi);
 				} else {
 					fields.Add (field.Name, Tuple.Create (field.Spec, fi));
 				}
@@ -786,7 +796,7 @@ namespace Mono.CSharp {
 			
 			return (CompiledMethod) System.Delegate.CreateDelegate (typeof (CompiledMethod), mi);
 		}
-		
+#endif		
 		static internal void LoadAliases (NamespaceEntry ns)
 		{
 			ns.Populate (using_alias_list, using_list);
@@ -892,8 +902,9 @@ namespace Mono.CSharp {
 		static public void LoadAssembly (string file)
 		{
 			lock (evaluator_lock){
-				driver.LoadAssembly (file, false);
-				GlobalRootNamespace.Instance.ComputeNamespaces (ctx);
+				var a = loader.LoadAssemblyFile (file);
+				if (a != null)
+					loader.Importer.ImportAssembly (a, RootContext.ToplevelTypes.GlobalRootNamespace);
 			}
 		}
 
@@ -903,9 +914,7 @@ namespace Mono.CSharp {
 		static public void ReferenceAssembly (Assembly a)
 		{
 			lock (evaluator_lock){
-//				GlobalRootNamespace.Instance.AddAssemblyReference (a);
-//				GlobalRootNamespace.Instance.ComputeNamespaces (ctx);
-				GlobalRootNamespace.Instance.ImportAssembly (a);
+				loader.Importer.ImportAssembly (a, RootContext.ToplevelTypes.GlobalRootNamespace);
 			}
 		}
 
@@ -997,7 +1006,7 @@ namespace Mono.CSharp {
 			return DateTime.Now - start;
 		}
 		
-#if !SMCS_SOURCE
+#if !SMCS_SOURCE && !STATIC
 		/// <summary>
 		///   Loads the assemblies from a package
 		/// </summary>
@@ -1031,6 +1040,7 @@ namespace Mono.CSharp {
 		}
 #endif
 
+#if !STATIC
 		/// <summary>
 		///   Loads the assembly
 		/// </summary>
@@ -1044,6 +1054,17 @@ namespace Mono.CSharp {
 		{
 			Evaluator.LoadAssembly (assembly);
 		}
+
+		static public void print (object obj)
+		{
+			Output.WriteLine (obj);
+		}
+
+		static public void print (string fmt, params object [] args)
+		{
+			Output.WriteLine (fmt, args);
+		}
+#endif
 		
 		/// <summary>
 		///   Returns a list of available static methods. 
@@ -1059,6 +1080,7 @@ namespace Mono.CSharp {
 					"  Prompt                  - The prompt used by the C# shell\n" +
 					"  ContinuationPrompt      - The prompt for partial input\n" +
 					"  Time(() -> { })         - Times the specified code\n" +
+					"  print (obj)             - Shorthand for Console.WriteLine\n" +
 					"  quit;                   - You'll never believe it - this quits the repl!\n" +
 					"  help;                   - This help text\n";
 			}
@@ -1101,56 +1123,20 @@ namespace Mono.CSharp {
 #endif
 	}
 
-	//
-	// A local variable reference that will create a Field in a
-	// Class with the resolved type.  This is necessary so we can
-	// support "var" as a field type in a class declaration.
-	//
-	// We allow LocalVariableReferece to do the heavy lifting, and
-	// then we insert the field with the resolved type
-	//
-	public class LocalVariableReferenceWithClassSideEffect : LocalVariableReference {
-		TypeContainer container;
-		string name;
-		
-		public LocalVariableReferenceWithClassSideEffect (TypeContainer container, string name, Block current_block, string local_variable_id, LocalInfo li, Location loc)
-			: base (current_block, local_variable_id, loc, li, false)
+	class HoistedEvaluatorVariable : HoistedVariable
+	{
+		public HoistedEvaluatorVariable (Field field)
+			: base (null, field)
 		{
-			this.container = container;
-			this.name = name;
 		}
 
-		public override bool Equals (object obj)
+		public override void EmitSymbolInfo ()
 		{
-			LocalVariableReferenceWithClassSideEffect lvr = obj as LocalVariableReferenceWithClassSideEffect;
-			if (lvr == null)
-				return false;
-
-			if (lvr.name != name || lvr.container != container)
-				return false;
-
-			return base.Equals (obj);
 		}
 
-		public override int GetHashCode ()
+		protected override FieldExpr GetFieldExpression (EmitContext ec)
 		{
-			return name.GetHashCode ();
-		}
-		
-		override public Expression DoResolveLValue (ResolveContext ec, Expression right_side)
-		{
-			Expression ret = base.DoResolveLValue (ec, right_side);
-			if (ret == null)
-				return null;
-
-			Field f = new Field (container, new TypeExpression (ret.Type, Location),
-					     Modifiers.PUBLIC | Modifiers.STATIC,
-					     new MemberName (name, Location), null);
-			container.AddField (f);
-			if (f.Define ())
-				Evaluator.QueueField (f);
-			
-			return ret;
+			return new FieldExpr (field, field.Location);
 		}
 	}
 
@@ -1200,31 +1186,11 @@ namespace Mono.CSharp {
 			}
 	
 			// This means its really a statement.
-			if (clone.Type == TypeManager.void_type){
-				source = source.Resolve (ec);
-				target = null;
-				type = TypeManager.void_type;
-				eclass = ExprClass.Value;
-				return this;
+			if (clone.Type == TypeManager.void_type || clone is DynamicInvocation || clone is Assign) {
+				return clone;
 			}
 
 			return base.DoResolve (ec);
-		}
-
-		public override void Emit (EmitContext ec)
-		{
-			if (target == null)
-				source.Emit (ec);
-			else
-				base.Emit (ec);
-		}
-
-		public override void EmitStatement (EmitContext ec)
-		{
-			if (target == null)
-				source.Emit (ec);
-			else
-				base.EmitStatement (ec);
 		}
 	}
 
@@ -1264,4 +1230,3 @@ namespace Mono.CSharp {
 	}
 	
 }
-	

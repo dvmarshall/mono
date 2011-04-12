@@ -60,6 +60,7 @@ namespace System.Runtime.Serialization
 		public CodeCompileUnit CodeCompileUnit { get; private set; }
 
 		CodeDomProvider code_provider = CodeDomProvider.CreateProvider ("csharp");
+		Dictionary<CodeNamespace,CodeIdentifiers> identifiers_table = new Dictionary<CodeNamespace,CodeIdentifiers> ();
 		ImportOptions import_options;
 
 		public ImportOptions Options {
@@ -232,6 +233,16 @@ namespace System.Runtime.Serialization
 			DoImport (schemas, type, qname);
 		}
 
+		string GetUniqueName (string name, CodeNamespace cns)
+		{
+			CodeIdentifiers i;
+			if (!identifiers_table.TryGetValue (cns, out i)) {
+				i = new CodeIdentifiers ();
+				identifiers_table.Add (cns, i);
+			}
+			return i.AddUnique (name, null);
+		}
+
 		void DoImport (XmlSchemaSet schemas, XmlSchemaType type, XmlQualifiedName qname)
 		{
 			CodeNamespace cns = null;
@@ -240,7 +251,7 @@ namespace System.Runtime.Serialization
 			clrRef = new CodeTypeReference (cns.Name.Length > 0 ? cns.Name + "." + qname.Name : qname.Name);
 
 			var td = new CodeTypeDeclaration () {
-				Name = CodeIdentifier.MakeValid (qname.Name),
+				Name = GetUniqueName (CodeIdentifier.MakeValid (qname.Name), cns),
 				TypeAttributes = GenerateInternal ? TypeAttributes.NotPublic : TypeAttributes.Public };
 			cns.Types.Add (td);
 
@@ -262,13 +273,13 @@ namespace System.Runtime.Serialization
 					if (cns.Types.Count == 0)
 						CodeCompileUnit.Namespaces.Remove (cns);
 				}
-			}
 
-			foreach (var impinfo in imported_types)
-				for (; impinfo.KnownTypeOutputIndex < impinfo.KnownClrTypes.Count; impinfo.KnownTypeOutputIndex++)
-					td.CustomAttributes.Add (new CodeAttributeDeclaration (
-						new CodeTypeReference (typeof (KnownTypeAttribute)),
-						new CodeAttributeArgument (new CodeTypeOfExpression (impinfo.KnownClrTypes [impinfo.KnownTypeOutputIndex]))));
+				foreach (var impinfo in imported_types)
+					for (; impinfo.KnownTypeOutputIndex < impinfo.KnownClrTypes.Count; impinfo.KnownTypeOutputIndex++)
+						td.CustomAttributes.Add (new CodeAttributeDeclaration (
+							new CodeTypeReference (typeof (KnownTypeAttribute)),
+							new CodeAttributeArgument (new CodeTypeOfExpression (impinfo.KnownClrTypes [impinfo.KnownTypeOutputIndex]))));
+			}
 		}
 
 		static readonly string ass_name = typeof (DataContractAttribute).Assembly.GetName ().Name;
@@ -531,18 +542,10 @@ namespace System.Runtime.Serialization
 
 		bool IsPredefinedType (XmlQualifiedName qname)
 		{
-			// FIXME: support char, guid and duration (MSSimpleNamespace); fix GetPrimitiveTypeFromName() first and then this at a time.
 			switch (qname.Namespace) {
 			case KnownTypeCollection.MSSimpleNamespace:
-				switch (qname.Name) {
-				case "char":
-				case "guid":
-				case "duration":
-					return true;
-				}
-				return false;
 			case XmlSchema.Namespace:
-				return KnownTypeCollection.GetPrimitiveTypeFromName (qname.Name) != null;
+				return KnownTypeCollection.GetPrimitiveTypeFromName (qname) != null;
 			}
 			return false;
 		}
@@ -611,15 +614,8 @@ namespace System.Runtime.Serialization
 
 			switch (typeName.Namespace) {
 			case XmlSchema.Namespace:
-				return new CodeTypeReference (KnownTypeCollection.GetPrimitiveTypeFromName (typeName.Name));
 			case KnownTypeCollection.MSSimpleNamespace:
-				switch (typeName.Name) {
-				case "guid":
-					return new CodeTypeReference (typeof (Guid));
-				case "duration":
-					return new CodeTypeReference (typeof (TimeSpan));
-				}
-				break;
+				return new CodeTypeReference (KnownTypeCollection.GetPrimitiveTypeFromName (typeName));
 			}
 
 			var info = GetTypeInfo (typeName, throwError);

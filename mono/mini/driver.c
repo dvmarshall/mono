@@ -115,7 +115,10 @@ opt_funcs [sizeof (int) * 8] = {
 };
 
 #ifdef __native_client_codegen__
-extern guint8 nacl_align_byte;
+extern gint8 nacl_align_byte;
+#endif
+#ifdef __native_client__
+extern char *nacl_mono_path;
 #endif
 
 #define DEFAULT_OPTIMIZATIONS (	\
@@ -313,6 +316,7 @@ opt_sets [] = {
        MONO_OPT_BRANCH | MONO_OPT_PEEPHOLE | MONO_OPT_LINEARS | MONO_OPT_CFOLD,
        MONO_OPT_BRANCH | MONO_OPT_PEEPHOLE | MONO_OPT_LINEARS | MONO_OPT_COPYPROP | MONO_OPT_CONSPROP | MONO_OPT_DEADCE,
        MONO_OPT_BRANCH | MONO_OPT_PEEPHOLE | MONO_OPT_LINEARS | MONO_OPT_COPYPROP | MONO_OPT_CONSPROP | MONO_OPT_DEADCE | MONO_OPT_LOOP | MONO_OPT_INLINE | MONO_OPT_INTRINS,
+       MONO_OPT_BRANCH | MONO_OPT_PEEPHOLE | MONO_OPT_LINEARS | MONO_OPT_COPYPROP | MONO_OPT_CONSPROP | MONO_OPT_DEADCE | MONO_OPT_LOOP | MONO_OPT_INLINE | MONO_OPT_INTRINS | MONO_OPT_TAILC,
        MONO_OPT_BRANCH | MONO_OPT_PEEPHOLE | MONO_OPT_LINEARS | MONO_OPT_COPYPROP | MONO_OPT_CONSPROP | MONO_OPT_DEADCE | MONO_OPT_LOOP | MONO_OPT_INLINE | MONO_OPT_INTRINS | MONO_OPT_SSA,
        MONO_OPT_BRANCH | MONO_OPT_PEEPHOLE | MONO_OPT_LINEARS | MONO_OPT_COPYPROP | MONO_OPT_CONSPROP | MONO_OPT_DEADCE | MONO_OPT_LOOP | MONO_OPT_INLINE | MONO_OPT_INTRINS | MONO_OPT_EXCEPTION,
        MONO_OPT_BRANCH | MONO_OPT_PEEPHOLE | MONO_OPT_LINEARS | MONO_OPT_COPYPROP | MONO_OPT_CONSPROP | MONO_OPT_DEADCE | MONO_OPT_LOOP | MONO_OPT_INLINE | MONO_OPT_INTRINS | MONO_OPT_EXCEPTION | MONO_OPT_CMOV,
@@ -1085,7 +1089,7 @@ mini_usage_jitdeveloper (void)
 		 "    --stats                Print statistics about the JIT operations\n"
 		 "    --wapi=hps|semdel|seminfo IO-layer maintenance\n"
 		 "    --inject-async-exc METHOD OFFSET Inject an asynchronous exception at METHOD\n"
-		 "    --verify-all           Run the verifier on all methods\n"
+		 "    --verify-all           Run the verifier on all assemblies and methods\n"
 		 "    --full-aot             Avoid JITting any code\n"
 		 "    --agent=ASSEMBLY[:ARG] Loads the specific agent assembly and executes its Main method with the given argument before loading the main assembly.\n"
 		 "    --no-x86-stack-align   Don't align stack on x86\n"
@@ -1198,6 +1202,8 @@ static const char info[] =
 #endif
 #ifdef HAVE_EPOLL
     "\tNotifications: epoll\n"
+#elif defined(HAVE_KQUEUE)
+    "\tNotification:  kqueue\n"
 #else
     "\tNotification:  Thread + polling\n"
 #endif
@@ -1244,8 +1250,10 @@ BOOL APIENTRY DllMain (HMODULE module_handle, DWORD reason, LPVOID reserved)
 		mono_install_runtime_load (mini_init);
 		break;
 	case DLL_PROCESS_DETACH:
+#ifdef ENABLE_COREE
 		if (coree_module_handle)
 			FreeLibrary (coree_module_handle);
+#endif
 		break;
 	}
 	return TRUE;
@@ -1351,6 +1359,11 @@ mono_main (int argc, char* argv[])
 
 	if (getenv ("MONO_NO_SMP"))
 		mono_set_use_smp (FALSE);
+
+#ifdef TARGET_ARM
+	// #683409
+	mono_set_use_smp (FALSE);
+#endif
 	
 	if (!g_thread_supported ())
 		g_thread_init (NULL);
@@ -1387,7 +1400,7 @@ mono_main (int argc, char* argv[])
 			char *build = mono_get_runtime_build_info ();
 			char *gc_descr;
 
-			g_print ("Mono JIT compiler version %s\nCopyright (C) 2002-2010 Novell, Inc and Contributors. www.mono-project.com\n", build);
+			g_print ("Mono JIT compiler version %s\nCopyright (C) 2002-2011 Novell, Inc and Contributors. www.mono-project.com\n", build);
 			g_free (build);
 			g_print (info);
 			gc_descr = mono_gc_get_description ();
@@ -1433,24 +1446,32 @@ mono_main (int argc, char* argv[])
 		} else if (strncmp (argv [i], "-O=", 3) == 0) {
 			opt = parse_optimizations (argv [i] + 3);
 		} else if (strcmp (argv [i], "--gc=sgen") == 0) {
-#if HAVE_BOEHM_GC
-			GString *path = g_string_new (argv [0]);
-			g_string_append (path, "-sgen");
-			argv [0] = path->str;
-			execvp (path->str, argv);
+			if (!strcmp (mono_gc_get_gc_name (), "boehm")) {
+				GString *path = g_string_new (argv [0]);
+				g_string_append (path, "-sgen");
+				argv [0] = path->str;
+#ifdef HAVE_EXECVP
+				execvp (path->str, argv);
+#else
+				fprintf (stderr, "Error: --gc=<NAME> option not supported on this platform.\n");
 #endif
-		} else if (strcmp (argv [i], "--gc=boehm") == 0) {
-#if HAVE_SGEN_GC
-			char *copy = g_strdup (argv [0]);
-			char *p = strstr (copy, "-sgen");
-			if (p == NULL){
-				fprintf (stderr, "Error, this process is not named mono-sgen and the command line option --boehm was passed");
-				exit (1);
 			}
-			*p = 0;
-			argv [0] = p;
-			execvp (p, argv);
+		} else if (strcmp (argv [i], "--gc=boehm") == 0) {
+			if (!strcmp (mono_gc_get_gc_name (), "sgen")) {
+				char *copy = g_strdup (argv [0]);
+				char *p = strstr (copy, "-sgen");
+				if (p == NULL){
+					fprintf (stderr, "Error, this process is not named mono-sgen and the command line option --boehm was passed");
+					exit (1);
+				}
+				*p = 0;
+				argv [0] = p;
+#ifdef HAVE_EXECVP
+				execvp (p, argv);
+#else
+				fprintf (stderr, "Error: --gc=<NAME> option not supported on this platform.\n");
 #endif
+			}
 		} else if (strcmp (argv [i], "--config") == 0) {
 			if (i +1 >= argc){
 				fprintf (stderr, "error: --config requires a filename argument\n");
@@ -1635,7 +1656,11 @@ mono_main (int argc, char* argv[])
 			mono_use_llvm = FALSE;
 #ifdef __native_client_codegen__
 		} else if (strcmp (argv [i], "--nacl-align-mask-off") == 0){
-			nacl_align_byte = 0xff;	
+			nacl_align_byte = -1; /* 0xff */
+#endif
+#ifdef __native_client__
+		} else if (strcmp (argv [i], "--nacl-mono-path") == 0){
+			nacl_mono_path = g_strdup(argv[++i]);
 #endif
 		} else {
 			fprintf (stderr, "Unknown command line option: '%s'\n", argv [i]);
@@ -1646,7 +1671,7 @@ mono_main (int argc, char* argv[])
 #ifdef __native_client_codegen__
 	if (getenv ("MONO_NACL_ALIGN_MASK_OFF"))
 	{
-		nacl_align_byte = 0xff;
+		nacl_align_byte = -1; /* 0xff */
 	}
 #endif
 
@@ -1697,12 +1722,6 @@ mono_main (int argc, char* argv[])
 		exit (1);
 	}
 #endif
-
-	/*
-	 * This must be called before mono_debug_init(), because the
-	 * latter registers GC roots.
-	 */
-	mono_gc_base_init ();
 
 	if (action == DO_DEBUGGER) {
 		enable_debugging = TRUE;

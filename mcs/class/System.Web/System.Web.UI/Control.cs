@@ -821,6 +821,8 @@ namespace System.Web.UI
 			uniqueID = null;
 #if NET_4_0
 			ClearCachedClientID ();
+#else
+			clientID = null;
 #endif
 			if (!HasControls ())
 				return;
@@ -1090,7 +1092,7 @@ namespace System.Web.UI
 				namingContainer = NamingContainer;
 				if (namingContainer == null)
 					return null;
-				
+
 				return namingContainer.FindControl (id, pathOffset);
 			}
 
@@ -1098,8 +1100,24 @@ namespace System.Web.UI
 				return null;
 			
 			int separatorIdx = id.IndexOf (IdSeparator, pathOffset);
-			if (separatorIdx == -1)
-				return LookForControlByName (id.Substring (pathOffset));
+			if (separatorIdx == -1) {
+				// If there are no separators in the id, we must first check whether
+				// any direct descendant control with that id exists before
+				// attempting to look in our naming container
+				Control ctl = LookForControlByName (pathOffset > 0 ? id.Substring (pathOffset) : id);
+				if (ctl != null)
+					return ctl;
+				
+				if (pathOffset == 0) {
+					namingContainer = NamingContainer;
+					if (namingContainer != null) {
+						ctl = namingContainer.FindControl (id);
+						if (ctl != null)
+							return ctl;
+					}
+				}
+				return null;
+			}
 
 			string idfound = id.Substring (pathOffset, separatorIdx - pathOffset);
 			namingContainer = LookForControlByName (idfound);
@@ -1616,10 +1634,12 @@ namespace System.Web.UI
 				trace.Write ("control", String.Concat ("LoadRecursive ", _userId, " ", type_name));
 			}
 #endif
-			if (Adapter != null)
-				Adapter.OnLoad (EventArgs.Empty);
-			else
-				OnLoad (EventArgs.Empty);
+			if ((stateMask & LOADED) == 0) {
+				if (Adapter != null)
+					Adapter.OnLoad (EventArgs.Empty);
+				else
+					OnLoad (EventArgs.Empty);
+			}
 			int ccount = _controls != null ? _controls.Count : 0;
 			for (int i = 0; i < ccount; i++) {
 				Control c = _controls [i];
@@ -2147,7 +2167,6 @@ namespace System.Web.UI
 				throw new ArgumentNullException ("control");
 
 			Control parent = this;
-			Page page = Page;
 			Control namingContainer = control.NamingContainer;
 			
 			if (namingContainer != null)

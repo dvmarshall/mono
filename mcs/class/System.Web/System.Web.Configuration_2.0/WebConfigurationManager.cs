@@ -50,11 +50,26 @@ namespace System.Web.Configuration {
 
 	public static class WebConfigurationManager
 	{
+		sealed class ConfigPath 
+		{
+			public string Path;
+			public bool InAnotherApp;
+
+			public ConfigPath (string path, bool inAnotherApp)
+			{
+				this.Path = path;
+				this.InAnotherApp = inAnotherApp;
+			}
+		}
+		
 		const int SAVE_LOCATIONS_CHECK_INTERVAL = 6000; // milliseconds
+		const int SECTION_CACHE_LOCK_TIMEOUT = 200; // milliseconds
 
 		static readonly char[] pathTrimChars = { '/' };
 		static readonly object suppressAppReloadLock = new object ();
 		static readonly object saveLocationsCacheLock = new object ();
+		
+		// See comment for the cacheLock field at top of System.Web.Caching/Cache.cs
 		static readonly ReaderWriterLockSlim sectionCacheLock;
 		
 #if !TARGET_J2EE
@@ -213,14 +228,11 @@ namespace System.Web.Configuration {
 		
 		static void ConfigurationSaveHandler (_Configuration sender, ConfigurationSaveEventArgs args)
 		{
-			bool locked = false;
 			try {
 				sectionCacheLock.EnterWriteLock ();
-				locked = true;
 				sectionCache.Clear ();
 			} finally {
-				if (locked)
-					sectionCacheLock.ExitWriteLock ();
+				sectionCacheLock.ExitWriteLock ();
 			}
 			
 			lock (suppressAppReloadLock) {
@@ -326,15 +338,16 @@ namespace System.Web.Configuration {
 			if (String.IsNullOrEmpty (path))
 				path = "/";
 
+			bool inAnotherApp = false;
 			if (!fweb && !String.IsNullOrEmpty (path))
-				path = FindWebConfig (path);
+				path = FindWebConfig (path, out inAnotherApp);
 
 			string confKey = path + site + locationSubPath + server + userName + password;
 			_Configuration conf = null;
 			conf = (_Configuration) configurations [confKey];
 			if (conf == null) {
 				try {
-					conf = ConfigurationFactory.Create (typeof (WebConfigurationHost), null, path, site, locationSubPath, server, userName, password);
+					conf = ConfigurationFactory.Create (typeof (WebConfigurationHost), null, path, site, locationSubPath, server, userName, password, inAnotherApp);
 					configurations [confKey] = conf;
 				} catch (Exception ex) {
 					lock (hasConfigErrorsLock) {
@@ -429,7 +442,6 @@ namespace System.Web.Configuration {
 			int cacheKey;
 			bool pathPresent = !String.IsNullOrEmpty (path);
 			string locationPath = null;
-			bool locked = false;
 
 			if (pathPresent)
 				locationPath = "location_" + path;
@@ -440,7 +452,6 @@ namespace System.Web.Configuration {
 			
 			try {
 				sectionCacheLock.EnterReadLock ();
-				locked = true;
 				
 				object o;
 				if (pathPresent) {
@@ -456,8 +467,7 @@ namespace System.Web.Configuration {
 				if (sectionCache.TryGetValue (baseCacheKey, out o))
 					return o;
 			} finally {
-				if (locked)
-					sectionCacheLock.ExitReadLock ();
+				sectionCacheLock.ExitReadLock ();
 			}
 
 			string cachePath = null;
@@ -550,53 +560,79 @@ namespace System.Web.Configuration {
 			
 			return curPath.Substring (0, idx);
 		}
-		
+
 		internal static string FindWebConfig (string path)
 		{
+			bool dummy;
+
+			return FindWebConfig (path, out dummy);
+		}
+		
+		internal static string FindWebConfig (string path, out bool inAnotherApp)
+		{
+			inAnotherApp = false;
+			
 			if (String.IsNullOrEmpty (path))
 				return path;
-
-			string dir;
-			if (path [path.Length - 1] == '/')
-				dir = path;
-			else {
-				dir = VirtualPathUtility.GetDirectory (path, false);
-				if (dir == null)
-					return path;
-			}
 			
-			string curPath = configPaths [dir] as string;
-			if (curPath != null)
-				return curPath;
+			string rootPath = HttpRuntime.AppDomainAppVirtualPath;
+			ConfigPath curPath;
+			curPath = configPaths [path] as ConfigPath;
+			if (curPath != null) {
+				inAnotherApp = curPath.InAnotherApp;
+				return curPath.Path;
+			}
 			
 			HttpContext ctx = HttpContext.Current;
 			HttpRequest req = ctx != null ? ctx.Request : null;
+			string physPath = req != null ? VirtualPathUtility.AppendTrailingSlash (MapPath (req, path)) : null;
+			string appDomainPath = HttpRuntime.AppDomainAppPath;
+			
+			if (physPath != null && appDomainPath != null && !physPath.StartsWith (appDomainPath, StringComparison.Ordinal))
+				inAnotherApp = true;
+			
+			string dir;
+			if (inAnotherApp || path [path.Length - 1] == '/')
+				dir = path;
+			else {
+			 	dir = VirtualPathUtility.GetDirectory (path, false);
+			 	if (dir == null)
+			 		return path;
+			}
+			
+			curPath = configPaths [dir] as ConfigPath;
+			if (curPath != null) {
+				inAnotherApp = curPath.InAnotherApp;
+				return curPath.Path;
+			}
+			
 			if (req == null)
 				return path;
 
-			curPath = path;
-			string rootPath = HttpRuntime.AppDomainAppVirtualPath;
-			string physPath;
-
-			while (String.Compare (curPath, rootPath, StringComparison.Ordinal) != 0) {
-				physPath = MapPath (req, curPath);
+			curPath = new ConfigPath (path, inAnotherApp);
+			while (String.Compare (curPath.Path, rootPath, StringComparison.Ordinal) != 0) {
+				physPath = MapPath (req, curPath.Path);
 				if (physPath == null) {
-					curPath = rootPath;
+					curPath.Path = rootPath;
 					break;
 				}
 
 				if (WebConfigurationHost.GetWebConfigFileName (physPath) != null)
 					break;
 				
-				curPath = GetParentDir (rootPath, curPath);
-				if (curPath == null || curPath == "~") {
-					curPath = rootPath;
+				curPath.Path = GetParentDir (rootPath, curPath.Path);
+				if (curPath.Path == null || curPath.Path == "~") {
+					curPath.Path = rootPath;
 					break;
 				}
 			}
 
-			configPaths [dir] = curPath;
-			return curPath;
+			if (String.Compare (curPath.Path, path, StringComparison.Ordinal) != 0)
+				configPaths [path] = curPath;
+			else
+				configPaths [dir] = curPath;
+			
+			return curPath.Path;
 		}
 		
 		static string GetCurrentPath (HttpContext ctx)
@@ -649,27 +685,31 @@ namespace System.Web.Configuration {
 		static void AddSectionToCache (int key, object section)
 		{
 			object cachedSection;
-			bool locked = false;
 
 			try {
-				sectionCacheLock.EnterUpgradeableReadLock ();
-				locked = true;
+				if (!sectionCacheLock.TryEnterUpgradeableReadLock (SECTION_CACHE_LOCK_TIMEOUT))
+					return;
 					
 				if (sectionCache.TryGetValue (key, out cachedSection) && cachedSection != null)
 					return;
 
-				bool innerLocked = false;
 				try {
-					sectionCacheLock.EnterWriteLock ();
-					innerLocked = true;
+					if (!sectionCacheLock.TryEnterWriteLock (SECTION_CACHE_LOCK_TIMEOUT))
+						return;
 					sectionCache.Add (key, section);
 				} finally {
-					if (innerLocked)
+					try {
 						sectionCacheLock.ExitWriteLock ();
+					} catch (SynchronizationLockException) {
+						// we can ignore it here
+					}
 				}
 			} finally {
-				if (locked)
+				try {
 					sectionCacheLock.ExitUpgradeableReadLock ();
+				} catch (SynchronizationLockException) {
+					// we can ignore it here
+				}
 			}
 		}
 		

@@ -6,4 +6,9 @@
 /*.o
 /*.lo
 /*.la
+/*.a
+/*.so
+/*.exe
+/*.mdb
 /TAGS
+/mprof-report

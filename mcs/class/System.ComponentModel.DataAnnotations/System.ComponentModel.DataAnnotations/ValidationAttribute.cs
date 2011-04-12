@@ -37,12 +37,15 @@ namespace System.ComponentModel.DataAnnotations
 	public abstract class ValidationAttribute : Attribute
 	{
 		const string DEFAULT_ERROR_MESSAGE = "The field {0} is invalid.";
-#if !NET_4_0
-		string errorMessage;
+#if NET_4_0
+		object nestedCallLock = new object ();
+		bool nestedCall;
+#else
 		string errorMessageResourceName;
 		string errorMessageString;
 		Type errorMessageResourceType;
 #endif
+		string errorMessage;
 		string fallbackErrorMessage;
 		Func <string> errorMessageAccessor;
 		
@@ -69,7 +72,14 @@ namespace System.ComponentModel.DataAnnotations
 			return String.Format (ErrorMessageString, name);
 		}
 #if NET_4_0
-		public string ErrorMessage { get; set; }
+		public string ErrorMessage {
+			get { return errorMessage; }
+			set {
+				errorMessage = value;
+				if (errorMessage != null)
+					errorMessageAccessor = null;
+			}
+		}
 		public string ErrorMessageResourceName { get; set; }
 		public Type ErrorMessageResourceType { get; set; }
 #else
@@ -77,9 +87,10 @@ namespace System.ComponentModel.DataAnnotations
 			get { return errorMessage; }
 
 			set {
+#if !NET_4_0
 				if (errorMessage != null)
 					throw new InvalidOperationException ("This property can be set only once.");
-
+#endif
 				if (String.IsNullOrEmpty (value))
 					throw new ArgumentException ("Value cannot be null or empty.", "value");
 
@@ -116,29 +127,53 @@ namespace System.ComponentModel.DataAnnotations
 		}
 #endif		
 		protected string ErrorMessageString {
-			get {
-#if NET_4_0
-				return GetStringFromResourceAccessor ();
-#else
-				return errorMessageString;
-#endif
-			}
+			get { return GetStringFromResourceAccessor (); }
 		}
 #if NET_4_0
+		NotImplementedException NestedNIEX ()
+		{
+			return new NotImplementedException ("IsValid(object value) has not been implemented by this class.  The preferred entry point is GetValidationResult() and classes should override IsValid(object value, ValidationContext context).");
+		}
+		
+		//
+		// This is the weirdest (to be gentle) idea ever... The IsValid (object) overload
+		// throws the NIEX when it is called from the default IsValid (object,
+		// ValidationContext) overload, but not when directly. And the reverse situation is
+		// true as well. That means, the calls detect the "nested" calls and that we need to
+		// protect the nestedCall flag... ugh
+		//
 		public virtual bool IsValid (object value)
 		{
-			throw new NotImplementedException ("IsValid(object value) has not been implemented by this class.  The preferred entry point is GetValidationResult() and classes should override IsValid(object value, ValidationContext context).");
+			lock (nestedCallLock) {
+				if (nestedCall)
+					throw NestedNIEX ();
+				try {
+					nestedCall = true;
+					return IsValid (value, null) == ValidationResult.Success;
+				} finally {
+					nestedCall = false;
+				}
+			}
 		}
 
 		protected virtual ValidationResult IsValid (object value, ValidationContext validationContext)
 		{
-			// .NET emulation
-			if (validationContext == null)
-				throw new NullReferenceException (".NET emulation.");
-			
-			if (!IsValid (value)) {
-				string memberName = validationContext.MemberName;
-				return new ValidationResult (FormatErrorMessage (validationContext.DisplayName), memberName != null ? new string[] { memberName } : new string[] {});
+			lock (nestedCallLock) {
+				if (nestedCall)
+					throw NestedNIEX ();
+				
+				try {
+					nestedCall = true;
+					if (!IsValid (value)) {
+						// .NET emulation
+						if (validationContext == null)
+							throw new NullReferenceException (".NET emulation.");
+						string memberName = validationContext.MemberName;
+						return new ValidationResult (FormatErrorMessage (validationContext.DisplayName), memberName != null ? new string[] { memberName } : new string[] {});
+					}
+				} finally {
+					nestedCall = false;
+				}
 			}
 
 			return ValidationResult.Success;
@@ -172,8 +207,7 @@ namespace System.ComponentModel.DataAnnotations
 			if (resourceType == null ^ resourceName == null)
 				throw new InvalidOperationException ("Both ErrorMessageResourceType and ErrorMessageResourceName must be set on this attribute.");
 
-			if (errorMessageAccessor != null)
-				return errorMessageAccessor ();
+			
 			
 			if (resourceType != null) {
 				PropertyInfo pi = resourceType.GetProperty (resourceName, BindingFlags.Public | BindingFlags.Static);
@@ -192,12 +226,16 @@ namespace System.ComponentModel.DataAnnotations
 				return pi.GetValue (null, null) as string;
 			}
 			
-			if (errorMessage == null)
+			if (errorMessage == null) {
+				if (errorMessageAccessor != null)
+					return errorMessageAccessor ();
+				
 				if (fallbackErrorMessage != null)
 					return fallbackErrorMessage;
 				else
 					return DEFAULT_ERROR_MESSAGE;
-
+			}
+			
 			return errorMessage;
 		}
 #if NET_4_0

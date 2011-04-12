@@ -35,18 +35,10 @@ using NUnit.Framework;
 
 using CategoryAttribute = NUnit.Framework.CategoryAttribute;
 
-// Some test result remarks:
-// - TypeExtension: [ConstructorArgument] -> PositionalParameters
-// - StaticExtension: almost identical to TypeExtension
-// - Reference: [ConstructorArgument], [ContentProperty] -> only ordinal member.
-// - ArrayExtension: [ConstrutorArgument], [ContentProperty] -> no PositionalParameters, Items.
-// - NullExtension: no member.
-// - MyExtension: [ConstructorArgument] -> only ordinal members...hmm?
-
 namespace MonoTests.System.Xaml
 {
 	[TestFixture]
-	public class XamlObjectReaderTest
+	public partial class XamlObjectReaderTest : XamlReaderTestBase
 	{
 		[Test]
 		public void ConstructorNullObject ()
@@ -82,73 +74,11 @@ namespace MonoTests.System.Xaml
 		}
 
 		[Test]
-		public void ReadNull ()
-		{
-			var r = new XamlObjectReader (null);
-			Assert.IsTrue (r.Read (), "#1");
-			Assert.AreEqual (XamlNodeType.NamespaceDeclaration, r.NodeType, "#1-2");
-			Assert.IsTrue (r.Read (), "#2");
-			Assert.AreEqual (XamlNodeType.StartObject, r.NodeType, "#2-2");
-			Assert.AreEqual (XamlLanguage.Null, r.Type, "#2-3");
-			Assert.IsTrue (r.Read (), "#3");
-			Assert.AreEqual (XamlNodeType.EndObject, r.NodeType, "#3-2");
-			Assert.IsFalse (r.Read (), "#4");
-			Assert.AreEqual (XamlNodeType.None, r.NodeType, "#4-2");
-		}
-
-		[Test]
-		public void Read1 ()
-		{
-			var r = new XamlObjectReader ("Foo");
-			Assert.AreEqual (XamlNodeType.None, r.NodeType, "#1");
-			Assert.IsNull (r.Member, "#2");
-			Assert.IsNull (r.Namespace, "#3");
-			Assert.IsNull (r.Member, "#4");
-			Assert.IsNull (r.Type, "#5");
-			Assert.IsNull (r.Value, "#6");
-
-			Assert.IsTrue (r.Read (), "#11");
-			Assert.AreEqual (XamlNodeType.NamespaceDeclaration, r.NodeType, "#12");
-			Assert.IsNotNull (r.Namespace, "#13");
-			Assert.AreEqual ("x", r.Namespace.Prefix, "#13-2");
-			Assert.AreEqual (XamlLanguage.Xaml2006Namespace, r.Namespace.Namespace, "#13-3");
-
-			Assert.IsTrue (r.Read (), "#21");
-			Assert.AreEqual (XamlNodeType.StartObject, r.NodeType, "#22");
-			Assert.IsNotNull (r.Type, "#23");
-			Assert.AreEqual (new XamlType (typeof (string), r.SchemaContext), r.Type, "#23-2");
-			Assert.IsNull (r.Namespace, "#25");
-
-			Assert.IsTrue (r.Read (), "#31");
-			Assert.AreEqual (XamlNodeType.StartMember, r.NodeType, "#32");
-			Assert.IsNotNull (r.Member, "#33");
-			Assert.AreEqual (XamlLanguage.Initialization, r.Member, "#33-2");
-			Assert.IsNull (r.Type, "#34");
-
-			Assert.IsTrue (r.Read (), "#41");
-			Assert.AreEqual (XamlNodeType.Value, r.NodeType, "#42");
-			Assert.AreEqual ("Foo", r.Value, "#43");
-			Assert.IsNull (r.Member, "#44");
-
-			Assert.IsTrue (r.Read (), "#51");
-			Assert.AreEqual (XamlNodeType.EndMember, r.NodeType, "#52");
-			Assert.IsNull (r.Type, "#53");
-			Assert.IsNull (r.Member, "#54");
-
-			Assert.IsTrue (r.Read (), "#61");
-			Assert.AreEqual (XamlNodeType.EndObject, r.NodeType, "#62");
-			Assert.IsNull (r.Type, "#63");
-
-			Assert.IsFalse (r.Read (), "#71");
-			Assert.IsTrue (r.IsEof, "#72");
-		}
-
-		[Test]
 		[ExpectedException (typeof (XamlObjectReaderException))]
 		public void ReadNonConstructible ()
 		{
 			// XamlType has no default constructor.
-			var r = new XamlObjectReader (XamlLanguage.String);
+			new XamlObjectReader (XamlLanguage.String);
 		}
 
 		[Test]
@@ -175,106 +105,61 @@ namespace MonoTests.System.Xaml
 			new XamlObjectReader (new TestClass3 ());
 		}
 
+		// Based on Common tests
+
+		[Test]
+		public void Read_String ()
+		{
+			var r = new XamlObjectReader ("foo");
+			Read_String (r);
+		}
+
+		[Test]
+		public void WriteNullMemberAsObject ()
+		{
+			var r = new XamlObjectReader (new TestClass4 ());
+			WriteNullMemberAsObject (r, delegate {
+				Assert.IsNull (r.Instance, "#x"); }
+				);
+		}
+		
+		[Test]
+		public void StaticMember ()
+		{
+			var r = new XamlObjectReader (new TestClass5 ());
+			StaticMember (r);
+		}
+
 		[Test]
 		public void Skip ()
 		{
 			var r = new XamlObjectReader ("Foo");
-			r.Skip ();
-			Assert.AreEqual (XamlNodeType.NamespaceDeclaration, r.NodeType, "#1");
-			r.Skip ();
-			Assert.AreEqual (XamlNodeType.StartObject, r.NodeType, "#2");
-			r.Skip ();
-			Assert.IsTrue (r.IsEof, "#3");
+			Skip (r);
 		}
-
+		
 		[Test]
 		public void Skip2 ()
 		{
 			var r = new XamlObjectReader ("Foo");
-			r.Read (); // NamespaceDeclaration
-			r.Read (); // Type
-			r.Read (); // Member (Initialization)
-			Assert.AreEqual (XamlNodeType.StartMember, r.NodeType, "#1");
-			r.Skip ();
-			Assert.AreEqual (XamlNodeType.EndObject, r.NodeType, "#2");
-			r.Skip ();
-			Assert.IsTrue (r.IsEof, "#3");
+			Skip2 (r);
 		}
 
 		[Test]
-		[Category ("NotWorking")]
-		public void Read2 ()
+		public void Read_XmlDocument ()
 		{
 			var doc = new XmlDocument ();
 			doc.LoadXml ("<root xmlns='urn:foo'><elem attr='val' /></root>");
 			var r = new XamlObjectReader (doc);
-
-			for (int i = 0; i < 3; i++) {
-				r.Read ();
-				Assert.AreEqual (XamlNodeType.NamespaceDeclaration, r.NodeType, "#1-" + i);
-			}
-			r.Read ();
-
-			Assert.AreEqual (new XamlType (typeof (XmlDocument), r.SchemaContext), r.Type, "#2");
-			r.Read ();
-			var l = new List<XamlMember> ();
-			for (int i = 0; i < 5; i++) {
-				Assert.AreEqual (XamlNodeType.StartMember, r.NodeType, "#3-" + i);
-				l.Add (r.Member);
-				r.Skip ();
-			}
-			l.First (m => m.Name == "Value");
-			l.First (m => m.Name == "InnerXml");
-			l.First (m => m.Name == "Prefix");
-			l.First (m => m.Name == "PreserveWhitespace");
-			l.First (m => m.Name == "Schemas");
-			Assert.AreEqual (XamlNodeType.EndObject, r.NodeType, "#4");
-			Assert.IsFalse (r.Read (), "#5");
+			Read_XmlDocument (r);
 		}
 
 		[Test]
 		public void Read_NonPrimitive ()
 		{
 			var r = new XamlObjectReader (new TestClass3 ());
-			Assert.AreEqual (XamlNodeType.None, r.NodeType, "#1");
-			Assert.IsTrue (r.Read (), "#6");
-			Assert.AreEqual (XamlNodeType.NamespaceDeclaration, r.NodeType, "#7");
-			Assert.AreEqual (String.Empty, r.Namespace.Prefix, "#7-2");
-			Assert.AreEqual ("clr-namespace:MonoTests.System.Xaml;assembly=" + GetType ().Assembly.GetName ().Name, r.Namespace.Namespace, "#7-3");
-
-			Assert.IsTrue (r.Read (), "#11");
-			Assert.AreEqual (XamlNodeType.NamespaceDeclaration, r.NodeType, "#12");
-			Assert.AreEqual ("x", r.Namespace.Prefix, "#12-2");
-			Assert.AreEqual (XamlLanguage.Xaml2006Namespace, r.Namespace.Namespace, "#12-3");
-
-			Assert.IsTrue (r.Read (), "#16");
-			Assert.AreEqual (XamlNodeType.StartObject, r.NodeType, "#17");
-			var xt = new XamlType (typeof (TestClass3), r.SchemaContext);
-			Assert.AreEqual (xt, r.Type, "#17-2");
-			Assert.IsTrue (r.Instance is TestClass3, "#17-3");
-
-			Assert.IsTrue (r.Read (), "#21");
-			Assert.AreEqual (XamlNodeType.StartMember, r.NodeType, "#22");
-			Assert.AreEqual (xt.GetMember ("Nested"), r.Member, "#22-2");
-
-			Assert.IsTrue (r.Read (), "#26");
-			Assert.AreEqual (XamlNodeType.StartObject, r.NodeType, "#27");
-			Assert.AreEqual (XamlLanguage.Null, r.Type, "#27-2");
-			Assert.IsNull (r.Instance, "#27-3");
-
-			Assert.IsTrue (r.Read (), "#31");
-			Assert.AreEqual (XamlNodeType.EndObject, r.NodeType, "#32");
-
-			Assert.IsTrue (r.Read (), "#36");
-			Assert.AreEqual (XamlNodeType.EndMember, r.NodeType, "#37");
-
-			Assert.IsTrue (r.Read (), "#41");
-			Assert.AreEqual (XamlNodeType.EndObject, r.NodeType, "#42");
-
-			Assert.IsFalse (r.Read (), "#46");
-			Assert.IsTrue (r.IsEof, "#47");
+			Read_NonPrimitive (r);
 		}
-
+		
 		[Test]
 		public void Read_Type ()
 		{
@@ -285,54 +170,18 @@ namespace MonoTests.System.Xaml
 		[Test]
 		public void Read_TypeExtension ()
 		{
-			var r = new XamlObjectReader (new TypeExtension (typeof (int)));
+			var tx = new TypeExtension (typeof (int));
+			var r = new XamlObjectReader (tx);
 			Read_TypeOrTypeExtension (r);
 		}
 
 		void Read_TypeOrTypeExtension (XamlObjectReader r)
 		{
-			Assert.IsTrue (r.Read (), "#11");
-			Assert.AreEqual (XamlNodeType.NamespaceDeclaration, r.NodeType, "#12");
-			Assert.IsNotNull (r.Namespace, "#13");
-			Assert.AreEqual ("x", r.Namespace.Prefix, "#13-2");
-			Assert.AreEqual (XamlLanguage.Xaml2006Namespace, r.Namespace.Namespace, "#13-3");
-			Assert.IsNull (r.Instance, "#14");
-
-			Assert.IsTrue (r.Read (), "#21");
-			Assert.AreEqual (XamlNodeType.StartObject, r.NodeType, "#22");
-			Assert.IsNotNull (r.Type, "#23");
-			Assert.AreEqual (new XamlType (typeof (TypeExtension), r.SchemaContext), r.Type, "#23-2");
-			Assert.IsNull (r.Namespace, "#25");
-			Assert.IsTrue (r.Instance is TypeExtension, "#26");
-
-			Assert.IsTrue (r.Read (), "#31");
-			Assert.AreEqual (XamlNodeType.StartMember, r.NodeType, "#32");
-			Assert.IsNotNull (r.Member, "#33");
-			Assert.AreEqual (XamlLanguage.PositionalParameters, r.Member, "#33-2");
-			Assert.IsNull (r.Type, "#34");
-			Assert.IsNull (r.Instance, "#35");
-
-			Assert.IsTrue (r.Read (), "#41");
-			Assert.AreEqual (XamlNodeType.Value, r.NodeType, "#42");
-			Assert.IsNotNull (r.Value, "#43");
-			Assert.AreEqual ("x:Int32", r.Value, "#43-2");
-			Assert.IsNull (r.Member, "#44");
-			Assert.IsNull (r.Instance, "#45");
-
-			Assert.IsTrue (r.Read (), "#51");
-			Assert.AreEqual (XamlNodeType.EndMember, r.NodeType, "#52");
-			Assert.IsNull (r.Type, "#53");
-			Assert.IsNull (r.Member, "#54");
-			Assert.IsNull (r.Instance, "#55");
-
-			Assert.IsTrue (r.Read (), "#61");
-			Assert.AreEqual (XamlNodeType.EndObject, r.NodeType, "#62");
-			Assert.IsNull (r.Type, "#63");
-
-			Assert.IsFalse (r.Read (), "#71");
-			Assert.IsTrue (r.IsEof, "#72");
+			Read_TypeOrTypeExtension (r, delegate {
+				Assert.IsTrue (r.Instance is TypeExtension, "#26");
+				}, XamlLanguage.PositionalParameters);
 		}
-
+		
 		[Test]
 		public void Read_Type2 ()
 		{
@@ -349,84 +198,23 @@ namespace MonoTests.System.Xaml
 
 		void Read_TypeOrTypeExtension2 (XamlObjectReader r)
 		{
-			Assert.IsTrue (r.Read (), "#11");
-			Assert.AreEqual (XamlNodeType.NamespaceDeclaration, r.NodeType, "#12");
-
-			var defns = "clr-namespace:MonoTests.System.Xaml;assembly=" + GetType ().Assembly.GetName ().Name;
-
-			Assert.AreEqual (String.Empty, r.Namespace.Prefix, "#13-2");
-			Assert.AreEqual (defns, r.Namespace.Namespace, "#13-3:" + r.Namespace.Prefix);
-
-			Assert.IsTrue (r.Read (), "#16");
-			Assert.AreEqual (XamlNodeType.NamespaceDeclaration, r.NodeType, "#17");
-			Assert.IsNotNull (r.Namespace, "#18");
-			Assert.AreEqual ("x", r.Namespace.Prefix, "#18-2");
-			Assert.AreEqual (XamlLanguage.Xaml2006Namespace, r.Namespace.Namespace, "#18-3:" + r.Namespace.Prefix);
-
-			Assert.IsTrue (r.Read (), "#21");
-			Assert.AreEqual (XamlNodeType.StartObject, r.NodeType, "#22");
-			Assert.AreEqual (new XamlType (typeof (TypeExtension), r.SchemaContext), r.Type, "#23-2");
-			Assert.IsTrue (r.Instance is TypeExtension, "#26");
-
-			Assert.IsTrue (r.Read (), "#31");
-			Assert.AreEqual (XamlNodeType.StartMember, r.NodeType, "#32");
-			Assert.AreEqual (XamlLanguage.PositionalParameters, r.Member, "#33-2");
-
-			Assert.IsTrue (r.Read (), "#41");
-			Assert.AreEqual (XamlNodeType.Value, r.NodeType, "#42");
-			Assert.AreEqual ("TestClass1", r.Value, "#43-2");
-
-			Assert.IsTrue (r.Read (), "#51");
-			Assert.AreEqual (XamlNodeType.EndMember, r.NodeType, "#52");
-
-			Assert.IsTrue (r.Read (), "#61");
-			Assert.AreEqual (XamlNodeType.EndObject, r.NodeType, "#62");
-
-			Assert.IsFalse (r.Read (), "#71");
-			Assert.IsTrue (r.IsEof, "#72");
+			Read_TypeOrTypeExtension2 (r, delegate {
+				Assert.IsTrue (r.Instance is TypeExtension, "#26");
+			}, XamlLanguage.PositionalParameters);
 		}
-
+		
 		[Test]
 		public void Read_Reference ()
 		{
-			var r = new XamlObjectReader (new Reference ("TestName"));
-			Assert.IsTrue (r.Read (), "#11");
-			Assert.AreEqual (XamlNodeType.NamespaceDeclaration, r.NodeType, "#12");
-			Assert.AreEqual ("x", r.Namespace.Prefix, "#13-2");
-			Assert.AreEqual (XamlLanguage.Xaml2006Namespace, r.Namespace.Namespace, "#13-3");
-
-			Assert.IsTrue (r.Read (), "#21");
-			Assert.AreEqual (XamlNodeType.StartObject, r.NodeType, "#22");
-			var xt = new XamlType (typeof (Reference), r.SchemaContext);
-			Assert.AreEqual (xt, r.Type, "#23-2");
-			Assert.IsTrue (r.Instance is Reference, "#26");
-
-			Assert.IsTrue (r.Read (), "#31");
-			Assert.AreEqual (XamlNodeType.StartMember, r.NodeType, "#32");
-			// unlike TypeExtension there is no PositionalParameters.
-			Assert.AreEqual (xt.GetMember ("Name"), r.Member, "#33-2");
-
-			// It is a ContentProperty (besides [ConstructorArgument])
-			Assert.IsTrue (r.Read (), "#41");
-			Assert.AreEqual (XamlNodeType.Value, r.NodeType, "#42");
-			Assert.AreEqual ("TestName", r.Value, "#43-2");
-
-			Assert.IsTrue (r.Read (), "#51");
-			Assert.AreEqual (XamlNodeType.EndMember, r.NodeType, "#52");
-
-			Assert.IsTrue (r.Read (), "#61");
-			Assert.AreEqual (XamlNodeType.EndObject, r.NodeType, "#62");
-
-			Assert.IsFalse (r.Read (), "#71");
-			Assert.IsTrue (r.IsEof, "#72");
+			var r = new XamlObjectReader (new Reference ("FooBar"));
+			Read_Reference (r);
 		}
-
-
+		
 		[Test]
 		public void Read_Null ()
 		{
 			var r = new XamlObjectReader (null);
-			Read_NullOrNullExtension (r, null);
+			Read_NullOrNullExtension (r, (object) null);
 		}
 
 		[Test]
@@ -439,62 +227,65 @@ namespace MonoTests.System.Xaml
 		
 		void Read_NullOrNullExtension (XamlObjectReader r, object instance)
 		{
-			Assert.IsTrue (r.Read (), "#11");
-			Assert.AreEqual (XamlNodeType.NamespaceDeclaration, r.NodeType, "#12");
-			Assert.IsNotNull (r.Namespace, "#13");
-			Assert.AreEqual ("x", r.Namespace.Prefix, "#13-2");
-			Assert.AreEqual (XamlLanguage.Xaml2006Namespace, r.Namespace.Namespace, "#13-3");
-			Assert.IsNull (r.Instance, "#14");
-
-			Assert.IsTrue (r.Read (), "#21");
-			Assert.AreEqual (XamlNodeType.StartObject, r.NodeType, "#22");
-			Assert.AreEqual (new XamlType (typeof (NullExtension), r.SchemaContext), r.Type, "#23-2");
-			Assert.AreEqual (instance, r.Instance, "#26"); // null and NullExtension are different here.
-
-			Assert.IsTrue (r.Read (), "#61");
-			Assert.AreEqual (XamlNodeType.EndObject, r.NodeType, "#62");
-
-			Assert.IsFalse (r.Read (), "#71");
-			Assert.IsTrue (r.IsEof, "#72");
+			Read_NullOrNullExtension (r, delegate {
+				Assert.AreEqual (instance, r.Instance, "#26"); // null and NullExtension are different here.
+			});
 		}
-
-		[Test] // almost identical to TypeExtension (only type/instance difference)
-		[Category ("NotWorking")]
+		
+		[Test]
 		public void Read_StaticExtension ()
 		{
-			var r = new XamlObjectReader (new StaticExtension ("MyMember"));
-			Assert.IsTrue (r.Read (), "#11");
-			Assert.AreEqual (XamlNodeType.NamespaceDeclaration, r.NodeType, "#12");
-			Assert.IsNotNull (r.Namespace, "#13");
-			Assert.AreEqual ("x", r.Namespace.Prefix, "#13-2");
-			Assert.AreEqual (XamlLanguage.Xaml2006Namespace, r.Namespace.Namespace, "#13-3");
-			Assert.IsNull (r.Instance, "#14");
-
-			Assert.IsTrue (r.Read (), "#21");
-			Assert.AreEqual (XamlNodeType.StartObject, r.NodeType, "#22");
-			Assert.AreEqual (new XamlType (typeof (StaticExtension), r.SchemaContext), r.Type, "#23-2");
-			Assert.IsTrue (r.Instance is StaticExtension, "#26");
-
-			Assert.IsTrue (r.Read (), "#31");
-			Assert.AreEqual (XamlNodeType.StartMember, r.NodeType, "#32");
-			Assert.AreEqual (XamlLanguage.PositionalParameters, r.Member, "#33-2");
-
-			Assert.IsTrue (r.Read (), "#41");
-			Assert.AreEqual (XamlNodeType.Value, r.NodeType, "#42");
-			Assert.AreEqual ("MyMember", r.Value, "#43-2");
-
-			Assert.IsTrue (r.Read (), "#51");
-			Assert.AreEqual (XamlNodeType.EndMember, r.NodeType, "#52");
-
-			Assert.IsTrue (r.Read (), "#61");
-			Assert.AreEqual (XamlNodeType.EndObject, r.NodeType, "#62");
-
-			Assert.IsFalse (r.Read (), "#71");
-			Assert.IsTrue (r.IsEof, "#72");
+			var r = new XamlObjectReader (new StaticExtension ("FooBar"));
+			Read_StaticExtension (r, XamlLanguage.PositionalParameters);
+		}
+		
+		[Test]
+		public void Read_ListInt32 ()
+		{
+			var obj = new List<int> (new int [] {5, -3, int.MaxValue, 0});
+			Read_ListInt32 (obj);
+		}
+		
+		[Test]
+		public void Read_ListInt32_2 ()
+		{
+			var obj = new List<int> (new int [0]);
+			Read_ListInt32 (obj);
+		}
+		
+		void Read_ListInt32 (List<int> obj)
+		{
+			var r = new XamlObjectReader (obj);
+			Read_ListInt32 (r, delegate {
+				Assert.AreEqual (obj, r.Instance, "#26");
+				}, obj);
+		}
+		
+		[Test]
+		public void Read_ListType ()
+		{
+			var obj = new List<Type> (new Type [] {typeof (int), typeof (Dictionary<Type, XamlType>)}) { Capacity = 2 };
+			var r = new XamlObjectReader (obj);
+			Read_ListType (r, true);
 		}
 
 		[Test]
-		[Category ("NotWorking")]
+		public void Read_ListArray ()
+		{
+			var obj = new List<Array> (new Array [] { new int [] { 1,2,3}, new string [] { "foo", "bar", "baz" }}) { Capacity = 2 };
+			var r = new XamlObjectReader (obj);
+			Read_ListArray (r);
+		}
+
+		[Test]
+		public void Read_ArrayList ()
+		{
+			var obj = new ArrayList (new int [] {5, -3, 0});
+			var r = new XamlObjectReader (obj);
+			Read_ArrayList (r);
+		}
+		
+		[Test]
 		public void Read_Array ()
 		{
 			var obj = new int [] {5, -3, 0};
@@ -503,120 +294,40 @@ namespace MonoTests.System.Xaml
 		}
 		
 		[Test]
-		[Category ("NotWorking")]
 		public void Read_ArrayExtension ()
 		{
 			var obj = new ArrayExtension (new int [] {5, -3, 0});
 			var r = new XamlObjectReader (obj);
 			Read_ArrayOrArrayExtension (r, obj);
 		}
+		
+		[Test]
+		public void Read_MyArrayExtension ()
+		{
+			var obj = new MyArrayExtension (new int [] {5, -3, 0});
+			var r = new XamlObjectReader (obj);
+			Read_ArrayOrArrayExtensionOrMyArrayExtension (r, obj, typeof (MyArrayExtension));
+		}
 
 		void Read_ArrayOrArrayExtension (XamlObjectReader r, object instance)
 		{
-			Assert.IsTrue (r.Read (), "#11");
-			Assert.AreEqual (XamlNodeType.NamespaceDeclaration, r.NodeType, "#12");
-			Assert.IsNotNull (r.Namespace, "#13");
-			Assert.AreEqual ("x", r.Namespace.Prefix, "#13-2");
-			Assert.AreEqual (XamlLanguage.Xaml2006Namespace, r.Namespace.Namespace, "#13-3");
-
-			Assert.IsTrue (r.Read (), "#21");
-			Assert.AreEqual (XamlNodeType.StartObject, r.NodeType, "#22");
-			var xt = new XamlType (typeof (ArrayExtension), r.SchemaContext);
-			Assert.AreEqual (xt, r.Type, "#23");
-			Assert.AreEqual (instance, r.Instance, "#26"); // different between Array and ArrayExtension
-
-			Assert.IsTrue (r.Read (), "#31");
-			Assert.AreEqual (XamlNodeType.StartMember, r.NodeType, "#32");
-			Assert.AreEqual (xt.GetMember ("Type"), r.Member, "#33");
-
-			Assert.IsTrue (r.Read (), "#41");
-			Assert.AreEqual (XamlNodeType.Value, r.NodeType, "#42");
-			Assert.AreEqual ("x:Int32", r.Value, "#43");
-
-			Assert.IsTrue (r.Read (), "#51");
-			Assert.AreEqual (XamlNodeType.EndMember, r.NodeType, "#52");
-
-			Assert.IsTrue (r.Read (), "#61");
-			Assert.AreEqual (XamlNodeType.StartMember, r.NodeType, "#62");
-			Assert.AreEqual (xt.GetMember ("Items"), r.Member, "#63");
-
-			Assert.IsTrue (r.Read (), "#71");
-			Assert.AreEqual (XamlNodeType.GetObject, r.NodeType, "#71-2");
-			Assert.IsNull (r.Type, "#71-3");
-			Assert.IsNull (r.Member, "#71-4");
-			Assert.IsNull (r.Value, "#71-5");
-
-			Assert.IsTrue (r.Read (), "#72");
-			Assert.AreEqual (XamlNodeType.StartMember, r.NodeType, "#72-2");
-			Assert.AreEqual (XamlLanguage.Items, r.Member, "#72-3");
-
-			string [] values = {"5", "-3", "0"};
-			for (int i = 0; i < 3; i++) {
-				Assert.IsTrue (r.Read (), i + "#73");
-				Assert.AreEqual (XamlNodeType.StartObject, r.NodeType, i + "#73-2");
-				Assert.IsTrue (r.Read (), i + "#74");
-				Assert.AreEqual (XamlNodeType.StartMember, r.NodeType, i + "#74-2");
-				Assert.AreEqual (XamlLanguage.Initialization, r.Member, i + "#74-3");
-				Assert.IsTrue (r.Read (), i + "#75");
-				Assert.IsNotNull (r.Value, i + "#75-2");
-				Assert.AreEqual (values [i], r.Value, i + "#73-3");
-				Assert.IsTrue (r.Read (), i + "#74");
-				Assert.AreEqual (XamlNodeType.EndMember, r.NodeType, i + "#74-2");
-				Assert.IsTrue (r.Read (), i + "#75");
-				Assert.AreEqual (XamlNodeType.EndObject, r.NodeType, i + "#75-2");
-			}
-
-			Assert.IsTrue (r.Read (), "#81");
-			Assert.AreEqual (XamlNodeType.EndMember, r.NodeType, "#82"); // XamlLanguage.Items
-
-			Assert.IsTrue (r.Read (), "#83");
-			Assert.AreEqual (XamlNodeType.EndObject, r.NodeType, "#84"); // GetObject
-
-			Assert.IsTrue (r.Read (), "#85");
-			Assert.AreEqual (XamlNodeType.EndMember, r.NodeType, "#86"); // ArrayExtension.Items
-
-			Assert.IsTrue (r.Read (), "#87");
-			Assert.AreEqual (XamlNodeType.EndObject, r.NodeType, "#88"); // ArrayExtension
-
-			Assert.IsFalse (r.Read (), "#89");
+			Read_ArrayOrArrayExtensionOrMyArrayExtension (r, instance, typeof (ArrayExtension));
 		}
 
-		[Test] // It gives Type member, not PositionalParameters... and no Items member here.
-		[Category ("NotWorking")]
+		void Read_ArrayOrArrayExtensionOrMyArrayExtension (XamlObjectReader r, object instance, Type extType)
+		{
+			Read_ArrayOrArrayExtensionOrMyArrayExtension (r, delegate {
+				Assert.AreEqual (instance, r.Instance, "#26"); // different between Array and ArrayExtension. Also, different from Type and TypeExtension (Type returns TypeExtension, while Array remains to return Array)
+				}, extType);
+		}
+
+		[Test]
 		public void Read_ArrayExtension2 ()
 		{
 			var r = new XamlObjectReader (new ArrayExtension (typeof (int)));
-			Assert.IsTrue (r.Read (), "#11");
-			Assert.AreEqual (XamlNodeType.NamespaceDeclaration, r.NodeType, "#12");
-			Assert.IsNotNull (r.Namespace, "#13");
-			Assert.AreEqual ("x", r.Namespace.Prefix, "#13-2");
-			Assert.AreEqual (XamlLanguage.Xaml2006Namespace, r.Namespace.Namespace, "#13-3");
-			Assert.IsNull (r.Instance, "#14");
-
-			Assert.IsTrue (r.Read (), "#21");
-			Assert.AreEqual (XamlNodeType.StartObject, r.NodeType, "#22");
-			var xt = new XamlType (typeof (ArrayExtension), r.SchemaContext);
-			Assert.AreEqual (xt, r.Type, "#23-2");
-			Assert.IsTrue (r.Instance is ArrayExtension, "#26");
-
-			Assert.IsTrue (r.Read (), "#31");
-			Assert.AreEqual (XamlNodeType.StartMember, r.NodeType, "#32");
-			Assert.AreEqual (xt.GetMember ("Type"), r.Member, "#33-2");
-
-			Assert.IsTrue (r.Read (), "#41");
-			Assert.AreEqual (XamlNodeType.Value, r.NodeType, "#42");
-			Assert.AreEqual ("x:Int32", r.Value, "#43-2");
-
-			Assert.IsTrue (r.Read (), "#51");
-			Assert.AreEqual (XamlNodeType.EndMember, r.NodeType, "#52");
-
-			Assert.IsTrue (r.Read (), "#61");
-			Assert.AreEqual (XamlNodeType.EndObject, r.NodeType, "#62");
-
-			Assert.IsFalse (r.Read (), "#71");
-			Assert.IsTrue (r.IsEof, "#72");
+			Read_ArrayExtension2 (r);
 		}
-
+		
 		[Test]
 		public void Read_DateTime ()
 		{
@@ -639,11 +350,32 @@ namespace MonoTests.System.Xaml
 		}
 
 		[Test]
+		public void Read_Guid ()
+		{
+			var obj = Guid.NewGuid ();
+			var r = new XamlObjectReader (obj);
+			Assert.IsNotNull (r.SchemaContext.GetXamlType (typeof (Guid)).TypeConverter, "premise#1");
+			Read_CommonClrType (r, obj);
+			Assert.AreEqual (obj.ToString (), Read_Initialization (r, null), "#1");
+		}
+
+		[Test]
 		[ExpectedException (typeof (XamlObjectReaderException))]
 		[Category ("NotWorking")]
 		public void Read_XData ()
 		{
 			var r = new XamlObjectReader (new XData () {Text = "xdata text"}); // XmlReader implementation is not visible.
+			while (!r.IsEof)
+				r.Read ();
+		}
+
+		[Test]
+		[ExpectedException (typeof (XamlObjectReaderException))]
+		[Category ("NotWorking")]
+		public void Read_XDataWrapper ()
+		{
+			var obj = new XDataWrapper () { Markup = new XData () {Text = "<my_xdata/>" } };
+			var r = new XamlObjectReader (obj);
 			while (!r.IsEof)
 				r.Read ();
 		}
@@ -659,48 +391,6 @@ namespace MonoTests.System.Xaml
 			SimpleReadStandardType (new TypeExtension ());
 		}
 
-		[Test]
-		public void Read_CustomMarkupExtension ()
-		{
-			var r = new XamlObjectReader (new MyExtension () { Foo = typeof (int), Bar = "v2"});
-			while (!r.IsEof) {
-				r.Read ();
-				if (r.Type != null && r.Type.UnderlyingType == typeof (MyExtension))
-					break;
-			}
-			Assert.IsFalse (r.IsEof, "#1");
-			var xt = r.Type;
-			while (!r.IsEof) {
-				r.Read ();
-				if (r.Member != null && r.Member.Name == "Foo")
-					break;
-			}
-			Assert.IsFalse (r.IsEof, "#2");
-			Assert.AreEqual (xt.GetMember ("Foo"), r.Member, "#3");
-			Assert.IsTrue (r.Read (), "#4");
-			Assert.AreEqual (XamlNodeType.Value, r.NodeType, "#5");
-			Assert.AreEqual ("x:Int32", r.Value, "#6");
-		}
-
-		[Test]
-		[Category ("NotWorking")]
-		public void Read_CustomMarkupExtension2 ()
-		{
-			var r = new XamlObjectReader (new MyExtension2 () { Foo = typeof (int), Bar = "v2"});
-			r.Read (); // ns
-			Assert.AreEqual (XamlNodeType.NamespaceDeclaration, r.NodeType, "#1");
-			r.Read ();
-			var xt = r.Type;
-			Assert.AreEqual (r.SchemaContext.GetXamlType (typeof (MyExtension2)), xt, "#2");
-			Assert.IsTrue (r.Read (), "#3");
-			Assert.AreEqual (XamlLanguage.Initialization, r.Member, "#4");
-			Assert.IsTrue (r.Read (), "#5");
-			Assert.AreEqual ("MonoTests.System.Xaml.MyExtension2", r.Value, "#6");
-			Assert.IsTrue (r.Read (), "#7"); // EndMember
-			Assert.IsTrue (r.Read (), "#8"); // EndObject
-			Assert.IsFalse (r.Read (), "#9");
-		}
-
 		void SimpleReadStandardType (object instance)
 		{
 			var r = new XamlObjectReader (instance);
@@ -708,123 +398,252 @@ namespace MonoTests.System.Xaml
 				r.Read ();
 		}
 
-		void Read_CommonXamlPrimitive (object obj)
+		[Test]
+		public void Read_CustomMarkupExtension ()
 		{
+			var r = new XamlObjectReader (new MyExtension () { Foo = typeof (int), Bar = "v2", Baz = "v7"});
+			Read_CustomMarkupExtension (r);
+		}
+		
+		[Test]
+		public void Read_CustomMarkupExtension2 ()
+		{
+			var r = new XamlObjectReader (new MyExtension2 () { Foo = typeof (int), Bar = "v2"});
+			Read_CustomMarkupExtension2 (r);
+		}
+		
+		[Test]
+		public void Read_CustomMarkupExtension3 ()
+		{
+			var r = new XamlObjectReader (new MyExtension3 () { Foo = typeof (int), Bar = "v2"});
+			Read_CustomMarkupExtension3 (r);
+		}
+		
+		[Test]
+		public void Read_CustomMarkupExtension4 ()
+		{
+			var r = new XamlObjectReader (new MyExtension4 () { Foo = typeof (int), Bar = "v2"});
+			Read_CustomMarkupExtension4 (r);
+		}
+		
+		[Test]
+		public void Read_CustomMarkupExtension5 ()
+		{
+			// This cannot be written to XamlXmlWriter though...
+
+			var r = new XamlObjectReader (new MyExtension5 ("foo", "bar"));
+			Read_CustomMarkupExtension5 (r);
+		}
+		
+		[Test]
+		public void Read_CustomMarkupExtension6 ()
+		{
+			var r = new XamlObjectReader (new MyExtension6 ("foo"));
+			Read_CustomMarkupExtension6 (r);
+		}
+
+		[Test]
+		public void Read_ArgumentAttributed ()
+		{
+			var obj = new ArgumentAttributed ("foo", "bar");
 			var r = new XamlObjectReader (obj);
-			Read_CommonXamlType (r);
-			Read_Initialization (r, obj);
+			Read_ArgumentAttributed (r, obj);
 		}
 
-		// from StartMember of Initialization to EndMember
-		string Read_Initialization (XamlObjectReader r, object comparableValue)
+		[Test]
+		public void Read_Dictionary ()
 		{
-			Assert.IsTrue (r.Read (), "init#1");
-			Assert.AreEqual (XamlNodeType.StartMember, r.NodeType, "init#2");
-			Assert.IsNotNull (r.Member, "init#3");
-			Assert.AreEqual (XamlLanguage.Initialization, r.Member, "init#3-2");
-			Assert.IsTrue (r.Read (), "init#4");
-			Assert.AreEqual (XamlNodeType.Value, r.NodeType, "init#5");
-			Assert.AreEqual (typeof (string), r.Value.GetType (), "init#6");
-			string ret = (string) r.Value;
-			if (comparableValue != null)
-				Assert.AreEqual (comparableValue.ToString (), r.Value, "init#6-2");
-			Assert.IsTrue (r.Read (), "init#7");
-			Assert.AreEqual (XamlNodeType.EndMember, r.NodeType, "init#8");
-			return ret;
+			var obj = new Dictionary<string,object> ();
+			obj ["Foo"] = 5.0;
+			obj ["Bar"] = -6.5;
+			var r = new XamlObjectReader (obj);
+			Read_Dictionary (r);
 		}
-
-		// from initial to StartObject
-		void Read_CommonXamlType (XamlObjectReader r)
-		{
-			Assert.IsTrue (r.Read (), "ct#1");
-			Assert.AreEqual (XamlNodeType.NamespaceDeclaration, r.NodeType, "ct#2");
-			Assert.IsNotNull (r.Namespace, "ct#3");
-			Assert.AreEqual ("x", r.Namespace.Prefix, "ct#3-2");
-			Assert.AreEqual (XamlLanguage.Xaml2006Namespace, r.Namespace.Namespace, "ct#3-3");
-			Assert.IsNull (r.Instance, "ct#4");
-
-			Assert.IsTrue (r.Read (), "ct#5");
-			Assert.AreEqual (XamlNodeType.StartObject, r.NodeType, "ct#6");
-		}
-
-		// from initial to StartObject
-		void Read_CommonClrType (XamlObjectReader r, object obj)
-		{
-			Assert.IsTrue (r.Read (), "ct#1");
-			Assert.AreEqual (XamlNodeType.NamespaceDeclaration, r.NodeType, "ct#2");
-			Assert.IsNotNull (r.Namespace, "ct#3");
-			Assert.AreEqual (String.Empty, r.Namespace.Prefix, "ct#3-2");
-			Assert.AreEqual ("clr-namespace:" + obj.GetType ().Namespace + ";assembly=" + obj.GetType ().Assembly.GetName ().Name, r.Namespace.Namespace, "ct#3-3");
-
-/*
-			Assert.IsTrue (r.Read (), "ct#4");
-			Assert.AreEqual (XamlNodeType.NamespaceDeclaration, r.NodeType, "ct#5");
-			Assert.IsNotNull (r.Namespace, "ct#6");
-			Assert.AreEqual ("x", r.Namespace.Prefix, "ct#6-2");
-			Assert.AreEqual (XamlLanguage.Xaml2006Namespace, r.Namespace.Namespace, "ct#6-3");
-*/
-
-			Assert.IsTrue (r.Read (), "ct#7");
-			Assert.AreEqual (XamlNodeType.StartObject, r.NodeType, "ct#8");
-		}
-	}
-
-	class TestClass1
-	{
-	}
-
-	public class TestClass3
-	{
-		public TestClass3 Nested { get; set; }
-	}
-
-	[MarkupExtensionReturnType (typeof (Type))]
-	public class MyExtension : MarkupExtension
-	{
-		public MyExtension ()
-		{
-		}
-
-		public MyExtension (Type arg1, string arg2)
-		{
-			Foo = arg1;
-			Bar = arg2;
-		}
-
-		[ConstructorArgument ("arg1")]
-		public Type Foo { get; set; }
 		
-		[ConstructorArgument ("arg2")]
-		public string Bar { get; set; }
-
-		public override object ProvideValue (IServiceProvider provider)
+		[Test]
+		public void Read_Dictionary2 ()
 		{
-			return "provided_value";
+			var obj = new Dictionary<string,Type> ();
+			obj ["Foo"] = typeof (int);
+			obj ["Bar"] = typeof (Dictionary<Type,XamlType>);
+			var r = new XamlObjectReader (obj);
+			Read_Dictionary2 (r, XamlLanguage.PositionalParameters);
 		}
-	}
-
-	[TypeConverter (typeof (StringConverter))] // This attribute is *the* difference between MyExtension and this type.
-	public class MyExtension2 : MarkupExtension
-	{
-		public MyExtension2 ()
-		{
-		}
-
-		public MyExtension2 (Type arg1, string arg2)
-		{
-			Foo = arg1;
-			Bar = arg2;
-		}
-
-		[ConstructorArgument ("arg1")]
-		public Type Foo { get; set; }
 		
-		[ConstructorArgument ("arg2")]
-		public string Bar { get; set; }
-
-		public override object ProvideValue (IServiceProvider provider)
+		[Test]
+		public void PositionalParameters1 ()
 		{
-			return "provided_value";
+			// Note: this can be read, but cannot be written to XML.
+			var obj = new PositionalParametersClass1 ("foo", 5);
+			var r = new XamlObjectReader (obj);
+			PositionalParameters1 (r);
+		}
+		
+		[Test]
+		public void PositionalParameters2 ()
+		{
+			var obj = new PositionalParametersWrapper ("foo", 5);
+			var r = new XamlObjectReader (obj);
+			PositionalParameters2 (r);
+		}
+
+		[Test]
+		public void ComplexPositionalParameters ()
+		{
+			var obj = new ComplexPositionalParameterWrapper () { Param = new ComplexPositionalParameterClass (new ComplexPositionalParameterValue () { Foo = "foo" })};
+			var r = new XamlObjectReader (obj);
+			ComplexPositionalParameters (r);
+		}
+		
+		[Test]
+		public void Read_ListWrapper ()
+		{
+			var obj = new ListWrapper (new List<int> (new int [] {5, -3, 0}));
+			var r = new XamlObjectReader (obj);
+			Read_ListWrapper (r);
+		}
+		
+		[Test]
+		public void Read_ListWrapper2 () // read-write list member.
+		{
+			var obj = new ListWrapper2 (new List<int> (new int [] {5, -3, 0}));
+			var r = new XamlObjectReader (obj);
+			Read_ListWrapper2 (r);
+		}
+
+		[Test]
+		public void Read_ContentIncluded ()
+		{
+			var obj = new ContentIncludedClass () { Content = "foo" };
+			var r = new XamlObjectReader (obj);
+			Read_ContentIncluded (r);
+		}
+
+		[Test]
+		public void Read_PropertyDefinition ()
+		{
+			var obj = new PropertyDefinition () { Modifier = "protected", Name = "foo", Type = XamlLanguage.String };
+			var r = new XamlObjectReader (obj);
+			Read_PropertyDefinition (r);
+		}
+
+		[Test]
+		public void Read_StaticExtensionWrapper ()
+		{
+			var obj = new StaticExtensionWrapper () { Param = new StaticExtension ("StaticExtensionWrapper.Foo") };
+			var r = new XamlObjectReader (obj);
+			Read_StaticExtensionWrapper (r);
+		}
+
+		[Test]
+		public void Read_TypeExtensionWrapper ()
+		{
+			var obj = new TypeExtensionWrapper () { Param = new TypeExtension ("Foo") };
+			var r = new XamlObjectReader (obj);
+			Read_TypeExtensionWrapper (r);
+		}
+		
+		[Test]
+		public void Read_EventContainer ()
+		{
+			var obj = new EventContainer ();
+			obj.Run += delegate { Console.Error.WriteLine ("done"); };
+			var xr = new XamlObjectReader (obj);
+			Read_EventContainer (xr);
+		}
+		
+		[Test]
+		public void Read_NamedItems ()
+		{
+			// foo
+			// - bar
+			// -- foo
+			// - baz
+			var obj = new NamedItem ("foo");
+			var obj2 = new NamedItem ("bar");
+			obj.References.Add (obj2);
+			obj.References.Add (new NamedItem ("baz"));
+			obj2.References.Add (obj);
+
+			var xr = new XamlObjectReader (obj);
+			Read_NamedItems (xr, true);
+		}
+
+		[Test]
+		public void Read_NamedItems2 ()
+		{
+			// i1
+			// - i2
+			// -- i3
+			// - i4
+			// -- i3
+			var obj = new NamedItem2 ("i1");
+			var obj2 = new NamedItem2 ("i2");
+			var obj3 = new NamedItem2 ("i3");
+			var obj4 = new NamedItem2 ("i4");
+			obj.References.Add (obj2);
+			obj.References.Add (obj4);
+			obj2.References.Add (obj3);
+			obj4.References.Add (obj3);
+
+			var xr = new XamlObjectReader (obj);
+			Read_NamedItems2 (xr, true);
+		}
+
+		[Test]
+		public void Read_XmlSerializableWrapper ()
+		{
+			var obj = new XmlSerializableWrapper (new XmlSerializable ("<root/>"));
+			var xr = new XamlObjectReader (obj);
+			Read_XmlSerializableWrapper (xr, true);
+		}
+
+		[Test] // If it is root, it is not serialized as IXmlSerializable.
+		public void Read_XmlSerializable ()
+		{
+			var obj = new XmlSerializable ("<root/>");
+			var xr = new XamlObjectReader (obj);
+			Read_XmlSerializable (xr);
+		}
+
+		[Test] // List contents are (sort of) treated as top-level too, so it is not serialized as IXmlSerializable(!)
+		public void Read_ListXmlSerializable ()
+		{
+			var obj = new List<XmlSerializable> ();
+			obj.Add (new XmlSerializable ("<root/>"));
+			var xr = new XamlObjectReader (obj);
+			Read_ListXmlSerializable (xr);
+		}
+		
+		[Test]
+		public void Read_AttachedProperty ()
+		{
+			var obj = new AttachedWrapper ();
+			Attachable.SetFoo (obj, "x");
+			Attachable.SetFoo (obj.Value, "y");
+			try {
+				var xr = new XamlObjectReader (obj);
+				Read_AttachedProperty (xr);
+			} finally {
+				Attachable.SetFoo (obj, null);
+				Attachable.SetFoo (obj.Value, null);
+			}
+		}
+		
+		[Test]
+		[Ignore ("Foo does not work as attached properties in this test yet")]
+		public void Read_AttachedProperty2 ()
+		{
+			var obj = new AttachedWrapper2 ();
+			AttachedWrapper2.SetFoo (obj, "x");
+			AttachedWrapper2.SetFoo (obj.Value, "y");
+			try {
+				var xr = new XamlObjectReader (obj);
+//while (xr.Read ()) Console.Error.WriteLine ("{0} {1} {2} {3}", xr.NodeType, xr.Type, xr.Member, xr.Value);
+			} finally {
+				AttachedWrapper2.SetFoo (obj, null);
+				AttachedWrapper2.SetFoo (obj.Value, null);
+			}
 		}
 	}
 }

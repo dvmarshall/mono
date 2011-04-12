@@ -144,6 +144,7 @@ namespace MonoTests.System.Xaml
 			Assert.IsFalse (t.IsArray, "#5");
 			Assert.IsFalse (t.IsGeneric, "#6");
 			Assert.IsTrue (t.IsPublic, "#7");
+			Assert.AreEqual (0, t.GetAllMembers ().Count, "#8");
 		}
 
 		[Test]
@@ -200,6 +201,8 @@ namespace MonoTests.System.Xaml
 			var t2 = new XamlType (t1.PreferredXamlNamespace, t1.Name, null, sctx);
 			// not sure if it always returns false for different .ctor comparisons...
 			Assert.IsFalse (t1 == t2, "#3");
+			
+			Assert.AreNotEqual (XamlLanguage.Type, new XamlSchemaContext ().GetXamlType (typeof (Type)), "#4");
 		}
 
 		[Test]
@@ -209,17 +212,34 @@ namespace MonoTests.System.Xaml
 			Assert.IsFalse (t.IsArray, "#1.1");
 			Assert.IsFalse (t.IsCollection, "#1.2");
 			Assert.IsNull (t.ItemType, "#1.3");
+
 			t = new XamlType (typeof (ArrayList), sctx);
 			Assert.IsFalse (t.IsArray, "#2.1");
 			Assert.IsTrue (t.IsCollection, "#2.2");
 			Assert.IsNotNull (t.ItemType, "#2.3");
 			Assert.AreEqual ("Object", t.ItemType.Name, "#2.4");
+
 			t = new XamlType (typeof (int []), sctx);
 			Assert.IsTrue (t.IsArray, "#3.1");
-			// why?
 			Assert.IsFalse (t.IsCollection, "#3.2");
 			Assert.IsNotNull (t.ItemType, "#3.3");
 			Assert.AreEqual (typeof (int), t.ItemType.UnderlyingType, "#3.4");
+
+			t = new XamlType (typeof (IList), sctx);
+			Assert.IsFalse (t.IsArray, "#4.1");
+			Assert.IsTrue (t.IsCollection, "#4.2");
+			Assert.IsNotNull (t.ItemType, "#4.3");
+			Assert.AreEqual (typeof (object), t.ItemType.UnderlyingType, "#4.4");
+
+			t = new XamlType (typeof (ICollection), sctx); // it is not a XAML collection.
+			Assert.IsFalse (t.IsArray, "#5.1");
+			Assert.IsFalse (t.IsCollection, "#5.2");
+			Assert.IsNull (t.ItemType, "#5.3");
+
+			t = new XamlType (typeof (ArrayExtension), sctx);
+			Assert.IsFalse (t.IsArray, "#6.1");
+			Assert.IsFalse (t.IsCollection, "#6.2");
+			Assert.IsNull (t.ItemType, "#6.3");
 		}
 
 		[Test]
@@ -233,12 +253,23 @@ namespace MonoTests.System.Xaml
 			Assert.IsTrue (t.IsDictionary, "#2.1");
 			Assert.IsFalse (t.IsCollection, "#2.1-2");
 			Assert.IsNotNull (t.KeyType, "#2.2");
+			Assert.IsNotNull (t.ItemType, "#2.2-2");
 			Assert.AreEqual ("Object", t.KeyType.Name, "#2.3");
+			Assert.AreEqual ("Object", t.ItemType.Name, "#2.3-2");
 			t = new XamlType (typeof (Dictionary<int,string>), sctx);
 			Assert.IsTrue (t.IsDictionary, "#3.1");
 			Assert.IsFalse (t.IsCollection, "#3.1-2");
 			Assert.IsNotNull (t.KeyType, "#3.2");
+			Assert.IsNotNull (t.ItemType, "#3.2-2");
 			Assert.AreEqual ("Int32", t.KeyType.Name, "#3.3");
+			Assert.AreEqual ("String", t.ItemType.Name, "#3.3-2");
+
+			var ml = t.GetAllMembers ();
+			Assert.AreEqual (2, ml.Count, "#3.4");
+			Assert.IsTrue (ml.Any (mi => mi.Name == "Keys"), "#3.4-2");
+			Assert.IsTrue (ml.Any (mi => mi.Name == "Values"), "#3.4-3");
+			Assert.IsNotNull (t.GetMember ("Keys"), "#3.4-4");
+			Assert.IsNotNull (t.GetMember ("Values"), "#3.4-5");
 		}
 
 		public class TestClass1
@@ -344,8 +375,7 @@ namespace MonoTests.System.Xaml
 			Assert.IsFalse (t.IsAmbient, "#22");
 			Assert.IsNull (t.AllowedContentTypes, "#23");
 			Assert.IsNull (t.ContentWrappers, "#24");
-			// FIXME: enable this when we fixed TypeConverter for Type.
-			//Assert.IsNotNull (t.TypeConverter, "#25"); // TypeTypeConverter
+			Assert.IsNotNull (t.TypeConverter, "#25"); // TypeTypeConverter
 			Assert.IsNull (t.ValueSerializer, "#26");
 			Assert.IsNull (t.ContentProperty, "#27");
 			//Assert.IsNull (t.DeferringLoader, "#28");
@@ -479,6 +509,48 @@ namespace MonoTests.System.Xaml
 		}
 
 		[Test]
+		public void DefaultValuesArgumentAttributed ()
+		{
+			var t = new XamlType (typeof (ArgumentAttributed), sctx);
+			Assert.IsNotNull (t.Invoker, "#1");
+			Assert.IsTrue (t.IsNameValid, "#2");
+			Assert.IsFalse (t.IsUnknown, "#3");
+			Assert.AreEqual ("ArgumentAttributed", t.Name, "#4");
+			Assert.AreEqual ("clr-namespace:MonoTests.System.Xaml;assembly=" + GetType ().Assembly.GetName ().Name, t.PreferredXamlNamespace, "#5");
+			Assert.IsNull (t.TypeArguments, "#6");
+			Assert.AreEqual (typeof (ArgumentAttributed), t.UnderlyingType, "#7");
+			Assert.IsTrue (t.ConstructionRequiresArguments, "#8");
+			Assert.IsFalse (t.IsArray, "#9");
+			Assert.IsFalse (t.IsCollection, "#10");
+			Assert.IsTrue (t.IsConstructible, "#11");
+			Assert.IsFalse (t.IsDictionary, "#12");
+			Assert.IsFalse (t.IsGeneric, "#13");
+			Assert.IsFalse (t.IsMarkupExtension, "#14");
+			Assert.IsFalse (t.IsNameScope, "#15");
+			Assert.IsTrue (t.IsNullable, "#16");
+			Assert.IsTrue (t.IsPublic, "#17");
+			Assert.IsFalse (t.IsUsableDuringInitialization, "#18");
+			Assert.IsFalse (t.IsWhitespaceSignificantCollection, "#19");
+			Assert.IsFalse (t.IsXData, "#20");
+			Assert.IsFalse (t.TrimSurroundingWhitespace, "#21");
+			Assert.IsFalse (t.IsAmbient, "#22");
+			Assert.IsNull (t.AllowedContentTypes, "#23");
+			Assert.IsNull (t.ContentWrappers, "#24");
+			Assert.IsNull (t.TypeConverter, "#25");
+			Assert.IsNull (t.ValueSerializer, "#26");
+			Assert.IsNull (t.ContentProperty, "#27");
+			// Assert.IsNull (t.DeferringLoader, "#28");
+			Assert.IsNull (t.MarkupExtensionReturnType, "#29");
+			Assert.AreEqual (sctx, t.SchemaContext, "#30");
+
+			var members = t.GetAllMembers ();
+			Assert.AreEqual (2, members.Count, "#31");
+			string [] names = {"Arg1", "Arg2"};
+			foreach (var member in members)
+				Assert.IsTrue (Array.IndexOf (names, member.Name) >= 0, "#32");
+		}
+
+		[Test]
 		public void TypeConverter ()
 		{
 			Assert.IsNull (new XamlType (typeof (List<object>), sctx).TypeConverter, "#1");
@@ -527,10 +599,19 @@ namespace MonoTests.System.Xaml
 		public void GetXamlNamespaces ()
 		{
 			var xt = new XamlType (typeof (string), new XamlSchemaContext (null, null));
-			var l = xt.GetXamlNamespaces ();
-			Assert.AreEqual (2, l.Count, "#1");
-			Assert.AreEqual (XamlLanguage.Xaml2006Namespace, l [0], "#2");
-			Assert.AreEqual ("clr-namespace:System;assembly=mscorlib", l [1], "#3");
+			var l = xt.GetXamlNamespaces ().ToList ();
+			l.Sort ();
+			Assert.AreEqual (2, l.Count, "#1-1");
+			Assert.AreEqual ("clr-namespace:System;assembly=mscorlib", l [0], "#1-2");
+			Assert.AreEqual (XamlLanguage.Xaml2006Namespace, l [1], "#1-3");
+
+			xt = new XamlType (typeof (TypeExtension), new XamlSchemaContext (null, null));
+			l = xt.GetXamlNamespaces ().ToList ();
+			l.Sort ();
+			Assert.AreEqual (3, l.Count, "#2-1");
+			Assert.AreEqual ("clr-namespace:System.Windows.Markup;assembly=System.Xaml", l [0], "#2-2");
+			Assert.AreEqual (XamlLanguage.Xaml2006Namespace, l [1], "#2-3");
+			Assert.AreEqual (XamlLanguage.Xaml2006Namespace, l [2], "#2-4"); // ??
 		}
 		
 		[Test]
@@ -546,6 +627,9 @@ namespace MonoTests.System.Xaml
 			Assert.IsNotNull (xm, "#3");
 			xm = xt.GetAliasedProperty (XamlLanguage.Lang);
 			Assert.IsNotNull (xm, "#4");
+			
+			xt = new XamlType (typeof (Dictionary<int,string>), xt.SchemaContext);
+			Assert.IsNull (xt.GetAliasedProperty (XamlLanguage.Key), "#5");
 		}
 
 		[Test]
@@ -598,6 +682,97 @@ namespace MonoTests.System.Xaml
 		{
 			// wow, so it returns some meaningless method parameters.
 			Assert.IsNotNull (new XamlType (typeof (MyXamlType), sctx).GetPositionalParameters (3), "#1");
+		}
+		
+		[Test]
+		public void ListMembers ()
+		{
+			var xt = new XamlType (typeof (List<int>), sctx);
+			var ml = xt.GetAllMembers ().ToArray ();
+			Assert.AreEqual (1, ml.Length, "#1");
+			Assert.IsNotNull (xt.GetMember ("Capacity"), "#2");
+		}
+		
+		[Test]
+		public void ComplexPositionalParameters ()
+		{
+			var xt = new XamlType (typeof (ComplexPositionalParameterWrapper), sctx);
+		}
+		
+		[Test]
+		public void CustomArrayExtension ()
+		{
+			var xt = new XamlType (typeof (MyArrayExtension), sctx);
+			var xm = xt.GetMember ("Items");
+			Assert.IsNotNull (xt.GetAllMembers ().FirstOrDefault (m => m.Name == "Items"), "#0");
+			Assert.IsNotNull (xm, "#1");
+			Assert.IsFalse (xm.IsReadOnly, "#2"); // Surprisingly it is False. Looks like XAML ReadOnly is true only if it lacks set accessor. Having private member does not make it ReadOnly.
+			Assert.IsTrue (xm.Type.IsCollection, "#3");
+			Assert.IsFalse (xm.Type.IsConstructible, "#4");
+		}
+		
+		[Test]
+		public void ContentIncluded ()
+		{
+			var xt = new XamlType (typeof (ContentIncludedClass), sctx);
+			var xm = xt.GetMember ("Content");
+			Assert.AreEqual (xm, xt.ContentProperty, "#1");
+			Assert.IsTrue (xt.GetAllMembers ().Contains (xm), "#2");
+		}
+		
+		[Test]
+		public void NamedItem ()
+		{
+			var xt = new XamlType (typeof (NamedItem), sctx);
+			var e = xt.GetAllMembers ().GetEnumerator ();
+			Assert.IsTrue (e.MoveNext (), "#1");
+			Assert.AreEqual (xt.GetMember ("ItemName"), e.Current, "#2");
+			Assert.IsTrue (e.MoveNext (), "#3");
+			Assert.AreEqual (xt.GetMember ("References"), e.Current, "#4");
+			Assert.IsFalse (e.MoveNext (), "#5");
+		}
+
+		[Test]
+		public void CanAssignTo ()
+		{
+			foreach (var xt1 in XamlLanguage.AllTypes)
+				foreach (var xt2 in XamlLanguage.AllTypes)
+					Assert.AreEqual (xt1.UnderlyingType.IsAssignableFrom (xt2.UnderlyingType), xt2.CanAssignTo (xt1), "{0} to {1}", xt1, xt2);
+			Assert.IsTrue (XamlLanguage.Type.CanAssignTo (XamlLanguage.Object), "x#1"); // specific test
+			Assert.IsFalse (new MyXamlType ("MyFooBar", null, sctx).CanAssignTo (XamlLanguage.String), "x#2"); // custom type to string -> false
+			Assert.IsTrue (new MyXamlType ("MyFooBar", null, sctx).CanAssignTo (XamlLanguage.Object), "x#3"); // custom type to object -> true!
+		}
+
+		[Test]
+		public void IsXData ()
+		{
+			Assert.IsFalse (XamlLanguage.XData.IsXData, "#1"); // yes, it is false.
+			Assert.IsTrue (sctx.GetXamlType (typeof (XmlSerializable)).IsXData, "#2");
+		}
+		
+		[Test]
+		public void XDataMembers ()
+		{
+			var xt = sctx.GetXamlType (typeof (XmlSerializableWrapper));
+			Assert.IsNotNull (xt.GetMember ("Value"), "#1"); // it is read-only, so if wouldn't be retrieved if it were not XData.
+
+			Assert.IsNotNull (XamlLanguage.XData.GetMember ("XmlReader"), "#2"); // it is returned, but ignored by XamlObjectReader.
+			Assert.IsNotNull (XamlLanguage.XData.GetMember ("Text"), "#3");
+		}
+
+		[Test]
+		public void AttachableProperty ()
+		{
+			var xt = new XamlType (typeof (Attachable), sctx);
+			var apl = xt.GetAllAttachableMembers ();
+			Assert.IsTrue (apl.Any (ap => ap.Name == "Foo"), "#1");
+			Assert.IsTrue (apl.Any (ap => ap.Name == "Protected"), "#2");
+			// oh? SetBaz() has non-void return value, but it seems ignored.
+			Assert.IsTrue (apl.Any (ap => ap.Name == "Baz"), "#3");
+			Assert.AreEqual (4, apl.Count, "#4");
+			Assert.IsTrue (apl.All (ap => ap.IsAttachable), "#5");
+			var x = apl.First (ap => ap.Name == "X");
+			Assert.IsTrue (x.IsEvent, "#6");
 		}
 	}
 

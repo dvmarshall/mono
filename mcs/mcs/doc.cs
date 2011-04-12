@@ -13,17 +13,10 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Reflection;
-using System.Reflection.Emit;
-using System.Runtime.CompilerServices;
-using System.Runtime.InteropServices;
-using System.Security;
-using System.Security.Permissions;
 using System.Text;
 using System.Xml;
 using System.Linq;
 
-using Mono.CompilerServices.SymbolWriter;
 
 namespace Mono.CSharp {
 
@@ -271,7 +264,7 @@ namespace Mono.CSharp {
 			}
 			TypeSpec t = FindDocumentedTypeNonArray (mc, identifier, ds, cref, r);
 			if (t != null && is_array)
-				t = Import.ImportType (Array.CreateInstance (t.GetMetaInfo (), 0).GetType ());
+				t = ArrayContainer.MakeType (t);
 			return t;
 		}
 
@@ -321,6 +314,17 @@ namespace Mono.CSharp {
 			int index = identifier.LastIndexOf ('.');
 			if (index < 0)
 				return null;
+
+			var nsName = identifier.Substring (0, index);
+			var typeName = identifier.Substring (index + 1);
+			Namespace ns = ds.NamespaceEntry.NS.GetNamespace (nsName, false);
+			ns = ns ?? mc.Module.GlobalRootNamespace.GetNamespace(nsName, false);
+			if (ns != null) {
+				var te = ns.LookupType(mc.Compiler, typeName, 0, true, mc.Location);
+				if(te != null)
+					return te.Type;
+			}
+
 			int warn;
 			TypeSpec parent = FindDocumentedType (mc, identifier.Substring (0, index), ds, cref, r);
 			if (parent == null)
@@ -616,7 +620,7 @@ namespace Mono.CSharp {
 				xref.SetAttribute ("cref", "N:" + ns.GetSignatureForError ());
 				return; // a namespace
 			}
-			if (GlobalRootNamespace.Instance.IsNamespace (name)) {
+			if (mc.Module.GlobalRootNamespace.IsNamespace (name)) {
 				xref.SetAttribute ("cref", "N:" + name);
 				return; // a namespace
 			}
@@ -720,8 +724,16 @@ namespace Mono.CSharp {
 			if (paramSpec.Length > 0)
 				paramSpec += ")";
 
-			string name = mc is Constructor ? "#ctor" : mc.Name;
-			if (mc.MemberName.IsGeneric)
+			string name = mc.Name;
+			if (mc is Constructor)
+				name = "#ctor";
+			else if (mc is InterfaceMemberBase) {
+				var imb = (InterfaceMemberBase) mc;
+				name = imb.GetFullName (imb.ShortName);
+			}
+			name = name.Replace ('.', '#');
+
+			if (mc.MemberName.TypeArguments != null && mc.MemberName.TypeArguments.Count > 0)
 				name += "``" + mc.MemberName.CountTypeArguments;
 
 			string suffix = String.Empty;
@@ -741,9 +753,24 @@ namespace Mono.CSharp {
 		{
 			var tp = type as TypeParameterSpec;
 			if (tp != null) {
+				int c = 0;
+				type = type.DeclaringType;
+				while (type != null && type.DeclaringType != null) {
+					type = type.DeclaringType;
+					c += type.MemberDefinition.TypeParametersCount;
+				}
 				var prefix = tp.IsMethodOwned ? "``" : "`";
-				return prefix + tp.DeclaredPosition;
+				return prefix + (c + tp.DeclaredPosition);
 			}
+
+			var pp = type as PointerContainer;
+			if (pp != null)
+				return GetSignatureForDoc (pp.Element) + "*";
+
+			ArrayContainer ap = type as ArrayContainer;
+			if (ap != null)
+				return GetSignatureForDoc (ap.Element) +
+					ArrayContainer.GetPostfixSignature (ap.Rank);
 
 			if (TypeManager.IsGenericType (type)) {
 				string g = type.MemberDefinition.Namespace;

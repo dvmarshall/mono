@@ -35,7 +35,9 @@
 #include <glib.h>
 
 #ifdef HAVE_UNISTD_H
+#ifndef __USE_GNU
 #define __USE_GNU
+#endif
 #include <unistd.h>
 #endif
 
@@ -77,6 +79,7 @@ gchar ***_NSGetEnviron();
 extern char **environ;
 #endif
 
+#ifndef G_OS_WIN32
 static int
 safe_read (int fd, gchar *buffer, gint count, GError **error)
 {
@@ -183,7 +186,7 @@ create_pipe (int *fds, GError **error)
 	}
 	return TRUE;
 }
-
+#endif /* G_OS_WIN32 */
 gboolean
 g_spawn_command_line_sync (const gchar *command_line,
 				gchar **standard_output,
@@ -381,10 +384,10 @@ g_spawn_async_with_pipes (const gchar *working_directory,
 			}
 
 			if (standard_input) {
-				dup2 (in_pipe [0], STDERR_FILENO);
+				dup2 (in_pipe [0], STDIN_FILENO);
 			} else if ((flags & G_SPAWN_CHILD_INHERITS_STDIN) == 0) {
 				fd = open ("/dev/null", O_RDONLY);
-				dup2 (fd, STDERR_FILENO);
+				dup2 (fd, STDIN_FILENO);
 			}
 
 			if ((flags & G_SPAWN_LEAVE_DESCRIPTORS_OPEN) != 0) {

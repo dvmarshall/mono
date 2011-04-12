@@ -1,4 +1,3 @@
-#if NET_4_0 || BOOTSTRAP_NET_4_0
 // ManuelResetEventSlim.cs
 //
 // Copyright (c) 2008 Jérémie "Garuma" Laval
@@ -23,39 +22,41 @@
 //
 //
 
+#if NET_4_0 || MOBILE
+
 using System;
-using System.Diagnostics;
 
 namespace System.Threading
 {
+	[System.Diagnostics.DebuggerDisplayAttribute ("Set = {IsSet}")]
 	public class ManualResetEventSlim : IDisposable
 	{
 		const int isSet    = 1;
 		const int isNotSet = 0;
-		const int defaultSpinCount = 10;
-		const int deepSleepTime = 20;
+		const int defaultSpinCount = 100;
 
 		int state;
 		readonly int spinCount;
 
 		ManualResetEvent handle;
 
+		readonly static Watch sw = Watch.StartNew ();
+
 		public ManualResetEventSlim () : this (false, defaultSpinCount)
 		{
 		}
 
-		public ManualResetEventSlim (bool initState) : this (initState, defaultSpinCount)
+		public ManualResetEventSlim (bool initialState) : this (initialState, defaultSpinCount)
 		{
 		}
 
-		public ManualResetEventSlim (bool initState, int spinCount)
+		public ManualResetEventSlim (bool initialState, int spinCount)
 		{
 			if (spinCount < 0)
 				throw new ArgumentOutOfRangeException ("spinCount is less than 0", "spinCount");
 
-			this.state = initState ? isSet : isNotSet;
+			this.state = initialState ? isSet : isNotSet;
 			this.spinCount = spinCount;
-			this.handle = new ManualResetEvent (initState);
 		}
 
 		public bool IsSet {
@@ -72,14 +73,16 @@ namespace System.Threading
 
 		public void Reset ()
 		{
-			Interlocked.Exchange (ref state, isNotSet);
-			handle.Reset ();
+			state = isNotSet;
+			if (handle != null)
+				handle.Reset ();
 		}
 
 		public void Set ()
 		{
-			Interlocked.Exchange (ref state, isSet);
-			handle.Set ();
+			state = isSet;
+			if (handle != null)
+				handle.Set ();
 		}
 
 		public void Wait ()
@@ -92,49 +95,57 @@ namespace System.Threading
 			return Wait (millisecondsTimeout, CancellationToken.None);
 		}
 
-		public bool Wait (TimeSpan ts)
+		public bool Wait (TimeSpan timeout)
 		{
-			return Wait ((int)ts.TotalMilliseconds, CancellationToken.None);
+			return Wait ((int)timeout.TotalMilliseconds, CancellationToken.None);
 		}
 
-		public void Wait (CancellationToken token)
+		public void Wait (CancellationToken cancellationToken)
 		{
-			Wait (-1, token);
+			Wait (-1, cancellationToken);
 		}
 
-		public bool Wait (int millisecondsTimeout, CancellationToken token)
+		public bool Wait (int millisecondsTimeout, CancellationToken cancellationToken)
 		{
 			if (millisecondsTimeout < -1)
 				throw new ArgumentOutOfRangeException ("millisecondsTimeout",
 				                                       "millisecondsTimeout is a negative number other than -1");
 
-			Watch s = Watch.StartNew ();
-			SpinWait sw = new SpinWait ();
+			long start = millisecondsTimeout == -1 ? 0 : sw.ElapsedMilliseconds;
+			SpinWait wait = new SpinWait ();
 
 			while (state == isNotSet) {
-				token.ThrowIfCancellationRequested ();
+				cancellationToken.ThrowIfCancellationRequested ();
 
-				if (millisecondsTimeout > -1 && s.ElapsedMilliseconds > millisecondsTimeout)
+				if (millisecondsTimeout > -1 && (sw.ElapsedMilliseconds - start) > millisecondsTimeout)
 					return false;
 
-				if (sw.Count < spinCount)
-					sw.SpinOnce ();
-				else
-					if (handle.WaitOne (Math.Min (Math.Max (millisecondsTimeout - (int)s.ElapsedMilliseconds, 1), deepSleepTime)))
+				if (wait.Count < spinCount) {
+					wait.SpinOnce ();
+				} else {
+					int waitTime = millisecondsTimeout == -1 ? -1 : Math.Max (millisecondsTimeout - (int)(sw.ElapsedMilliseconds - start) , 1);
+					WaitHandle handle = WaitHandle;
+					if (state == isSet)
 						return true;
+					if (WaitHandle.WaitAny (new[] { handle, cancellationToken.WaitHandle }, waitTime, false) == 0)
+						return true;
+				}
 			}
 
 			return true;
 		}
 
-		public bool Wait (TimeSpan ts, CancellationToken token)
+		public bool Wait (TimeSpan timeout, CancellationToken cancellationToken)
 		{
-			return Wait ((int)ts.TotalMilliseconds, token);
+			return Wait ((int)timeout.TotalMilliseconds, cancellationToken);
 		}
 
 		public WaitHandle WaitHandle {
 			get {
-				return handle;
+				if (handle != null)
+					return handle;
+				return LazyInitializer.EnsureInitialized (ref handle,
+				                                          () => new ManualResetEvent (state == isSet ? true : false));
 			}
 		}
 
@@ -144,7 +155,7 @@ namespace System.Threading
 			Dispose(true);
 		}
 
-		protected virtual void Dispose(bool managedRes)
+		protected virtual void Dispose (bool disposing)
 		{
 
 		}

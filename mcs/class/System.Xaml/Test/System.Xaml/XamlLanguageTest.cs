@@ -193,6 +193,13 @@ namespace MonoTests.System.Xaml
 			// weird name
 			TestXamlDirectiveCommon (d, "_Initialization", AllowedMemberLocations.Any, typeof (object));
 		}
+		
+		[Test]
+		[ExpectedException (typeof (NotSupportedException))]
+		public void InitializationGetValue ()
+		{
+			XamlLanguage.Initialization.Invoker.GetValue ("foo");
+		}
 
 		[Test]
 		public void Items ()
@@ -236,6 +243,7 @@ namespace MonoTests.System.Xaml
 			var d = XamlLanguage.PositionalParameters;
 			// weird name
 			TestXamlDirectiveCommon (d, "_PositionalParameters", AllowedMemberLocations.Any, typeof (List<object>));
+			// LAMESPEC: In [MS-XAML-2009] AllowedLocations is None, unlike this Any value.
 		}
 
 		[Test]
@@ -390,7 +398,10 @@ namespace MonoTests.System.Xaml
 		{
 			var t = XamlLanguage.Static;
 			TestXamlTypeExtension (t, "StaticExtension", typeof (StaticExtension), typeof (object), false);
-			Assert.IsNotNull (t.TypeConverter.ConverterInstance, "#25-2");
+			var tc = t.TypeConverter.ConverterInstance;
+			Assert.IsNotNull (tc, "#25-2");
+			Assert.IsFalse (tc.CanConvertFrom (typeof (string)), "#25-3");
+			Assert.IsTrue (tc.CanConvertTo (typeof (string)), "#25-4");
 			Assert.IsNull (t.ContentProperty, "#27");
 
 			var l = t.GetAllMembers ().ToArray ();
@@ -445,6 +456,7 @@ namespace MonoTests.System.Xaml
 		{
 			var m = XamlLanguage.Type.GetMember ("Type");
 			TestMemberCommon (m, "Type", typeof (Type), typeof (TypeExtension), true);
+			Assert.AreNotEqual (XamlLanguage.Type, m.Type, "#1");
 		}
 
 		// primitive types
@@ -522,6 +534,12 @@ namespace MonoTests.System.Xaml
 			var t = XamlLanguage.Int32;
 			TestXamlTypePrimitive (t, "Int32", typeof (int), false, false);
 
+			try {
+				t.Invoker.CreateInstance (new object [] {1});
+				Assert.Fail ("Should expect .ctor() and fail");
+			} catch (MissingMethodException) {
+			}
+
 			/* Those properties are pointless regarding practical use. Those "members" does not participate in serialization.
 			var l = t.GetAllAttachableMembers ().ToArray ();
 			Assert.AreEqual (1, l.Length, "#32");
@@ -574,6 +592,12 @@ namespace MonoTests.System.Xaml
 			TestXamlTypePrimitive (t, "String", typeof (string), true, true);
 			Assert.IsNotNull (XamlLanguage.AllTypes.First (tt => tt.Name == "String").ValueSerializer, "#x");
 			Assert.IsNotNull (XamlLanguage.String.ValueSerializer, "#y");
+
+			try {
+				t.Invoker.CreateInstance (new object [] {"foo"});
+				Assert.Fail ("Should expect .ctor() and fail");
+			} catch (MissingMethodException) {
+			}
 
 			/* Those properties are pointless regarding practical use. Those "members" does not participate in serialization.
 			var l = t.GetAllAttachableMembers ().ToArray ();
@@ -656,6 +680,8 @@ namespace MonoTests.System.Xaml
 		{
 			var m = XamlLanguage.Property.GetMember ("Type");
 			TestMemberCommon (m, "Type", typeof (XamlType), typeof (PropertyDefinition), true);
+			Assert.IsNotNull (m.TypeConverter, "#1");
+			Assert.IsNull (m.ValueSerializer, "#2");
 		}
 
 		[Test]
@@ -683,6 +709,7 @@ namespace MonoTests.System.Xaml
 			var l = t.GetAllMembers ().ToArray ();
 			Assert.AreEqual (1, l.Length, "#31");
 			l.First (m => m.Name == "Name");
+			Assert.AreEqual (l [0], t.ContentProperty, "#32");
 		}
 
 		[Test]
@@ -790,6 +817,7 @@ namespace MonoTests.System.Xaml
 				Assert.IsNotNull (t.TypeConverter, "#25");
 			Assert.IsNotNull (t.MarkupExtensionReturnType, "#29");
 			Assert.AreEqual (extReturnType, t.MarkupExtensionReturnType.UnderlyingType, "#29-2");
+			Assert.IsNull (t.Invoker.SetMarkupExtensionHandler, "#31"); // orly?
 		}
 
 		void TestMemberCommon (XamlMember m, string name, Type type, Type declType, bool hasSetter)

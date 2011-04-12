@@ -25,6 +25,7 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Linq;
 using System.ServiceModel;
 using System.ServiceModel.Channels;
 using System.ServiceModel.Description;
@@ -69,7 +70,9 @@ namespace System.ServiceModel.Discovery
 			ContractTypeNames = new Collection<XmlQualifiedName> ();
 			Extensions = new Collection<XElement> ();
 			Scopes = new Collection<Uri> ();
+			ScopeMatchBy = ScopeMatchByPrefix;
 			MaxResults = default_max_results;
+			Duration = TimeSpan.FromSeconds (20);
 		}
 
 		public FindCriteria (Type contractType)
@@ -86,10 +89,46 @@ namespace System.ServiceModel.Discovery
 		public Uri ScopeMatchBy { get; set; }
 		public Collection<Uri> Scopes { get; private set; }
 
-		[MonoTODO]
+		[MonoTODO ("find out conformant behavior, and implement remaining bits")]
 		public bool IsMatch (EndpointDiscoveryMetadata endpointDiscoveryMetadata)
 		{
-			throw new NotImplementedException ();
+			var edm = endpointDiscoveryMetadata;
+			if (edm == null)
+				throw new ArgumentNullException ("endpointDiscoveryMetadata");
+			if (ContractTypeNames.Count > 0) {
+				bool match = false;
+				foreach (var qn in ContractTypeNames)
+					if (edm.ContractTypeNames.Contains (qn))
+						match = true;
+				if (!match)
+					return false;
+			}
+			if (Scopes.Count > 0) {
+				bool match = false;
+				foreach (var scope in Scopes) {
+					if (ScopeMatchBy == null || ScopeMatchBy.Equals (ScopeMatchByPrefix)) {
+						if (edm.Scopes.Contains (scope))
+							match = true;
+					} else if (ScopeMatchBy.Equals (ScopeMatchByExact)) {
+						if (edm.Scopes.Any (s => s.AbsoluteUri == scope.AbsoluteUri))
+							match = true;
+					}
+					else if (ScopeMatchBy.Equals (ScopeMatchByUuid))
+						throw new NotImplementedException ();
+					else if (ScopeMatchBy.Equals (ScopeMatchByNone))
+						throw new NotImplementedException ();
+					else if (ScopeMatchBy.Equals (ScopeMatchByLdap))
+						throw new NotImplementedException ();
+					else
+						throw new InvalidOperationException (String.Format ("Unexpected ScopeMatchBy value: {0}", ScopeMatchBy));
+				}
+				if (!match)
+					return false;
+			}
+			if (Extensions.Count > 0)
+				throw new NotImplementedException (String.Format ("{0} extensions are found", Extensions.Count));
+
+			return true;
 		}
 
 		internal static FindCriteria ReadXml (XmlReader reader, DiscoveryVersion version)
@@ -100,23 +139,24 @@ namespace System.ServiceModel.Discovery
 			var ret = new FindCriteria ();
 
 			reader.MoveToContent ();
-			if (!reader.IsStartElement ("ProbeType", version.Namespace) || reader.IsEmptyElement)
-				throw new XmlException ("Non-empty ProbeType element is expected");
-			reader.ReadStartElement ("ProbeType", version.Namespace);
+			if (!reader.IsStartElement ("Probe", version.Namespace) || reader.IsEmptyElement)
+				throw new XmlException (String.Format ("Non-empty ProbeType element is expected. Got '{0}' {1} node in namespace '{2}' instead.", reader.LocalName, reader.NodeType, reader.NamespaceURI));
+			reader.ReadStartElement ("Probe", version.Namespace);
 
 			// standard members
 			reader.MoveToContent ();
-			bool isEmpty = reader.IsEmptyElement;
-			ret.ContractTypeNames = new Collection<XmlQualifiedName> ((XmlQualifiedName []) reader.ReadElementContentAs (typeof (XmlQualifiedName []), null, "Types", version.Namespace));
+			if (reader.IsStartElement ("Types", version.Namespace))
+				ret.ContractTypeNames = new Collection<XmlQualifiedName> ((XmlQualifiedName []) reader.ReadElementContentAs (typeof (XmlQualifiedName []), null, "Types", version.Namespace));
 
 			reader.MoveToContent ();
-			if (!reader.IsStartElement ("Scopes", version.Namespace))
-				throw new XmlException ("Scopes element is expected");
-			if (reader.MoveToAttribute ("MatchBy")) {
-				ret.ScopeMatchBy = new Uri (reader.Value, UriKind.RelativeOrAbsolute);
-				reader.MoveToElement ();
+			if (reader.IsStartElement ("Types", version.Namespace)) {
+				if (reader.MoveToAttribute ("MatchBy")) {
+					ret.ScopeMatchBy = new Uri (reader.Value, UriKind.RelativeOrAbsolute);
+					reader.MoveToElement ();
+				}
 			}
-			ret.Scopes = new Collection<Uri> ((Uri []) reader.ReadElementContentAs (typeof (Uri []), null, "Scopes", version.Namespace));
+			if (reader.IsStartElement ("Scopes", version.Namespace))
+				ret.Scopes = new Collection<Uri> ((Uri []) reader.ReadElementContentAs (typeof (Uri []), null, "Scopes", version.Namespace));
 
 			// non-standard members
 			for (reader.MoveToContent (); !reader.EOF && reader.NodeType != XmlNodeType.EndElement; reader.MoveToContent ()) {
@@ -145,22 +185,26 @@ namespace System.ServiceModel.Discovery
 				throw new ArgumentNullException ("writer");
 
 			// standard members
-			writer.WriteStartElement ("d", "Types", version.Namespace);
-			int p = 0;
-			foreach (var qname in ContractTypeNames)
-				if (writer.LookupPrefix (qname.Namespace) == null)
-					writer.WriteAttributeString ("xmlns", "p" + p++, "http://www.w3.org/2000/xmlns/", qname.Namespace);
-			writer.WriteValue (ContractTypeNames);
-			writer.WriteEndElement ();
-
-			writer.WriteStartElement ("Scopes", version.Namespace);
-			if (ScopeMatchBy != null) {
-				writer.WriteStartAttribute ("MatchBy");
-				writer.WriteValue (ScopeMatchBy);
-				writer.WriteEndAttribute ();
+			if (ContractTypeNames.Count > 0) {
+				writer.WriteStartElement ("d", "Types", version.Namespace);
+				int p = 0;
+				foreach (var qname in ContractTypeNames)
+					if (writer.LookupPrefix (qname.Namespace) == null)
+						writer.WriteAttributeString ("xmlns", "p" + p++, "http://www.w3.org/2000/xmlns/", qname.Namespace);
+				writer.WriteValue (ContractTypeNames);
+				writer.WriteEndElement ();
 			}
-			writer.WriteValue (Scopes);
-			writer.WriteEndElement ();
+
+			if (Scopes.Count > 0) {
+				writer.WriteStartElement ("Scopes", version.Namespace);
+				if (ScopeMatchBy != null) {
+					writer.WriteStartAttribute ("MatchBy");
+					writer.WriteValue (ScopeMatchBy);
+					writer.WriteEndAttribute ();
+				}
+				writer.WriteValue (Scopes);
+				writer.WriteEndElement ();
+			}
 
 			// non-standard members
 			if (MaxResults != default_max_results) {

@@ -473,14 +473,19 @@ namespace System.Reflection.Emit
 		[ComVisible (true)]
 		public ConstructorBuilder DefineDefaultConstructor (MethodAttributes attributes)
 		{
-			Type parent_type;
+			Type parent_type, old_parent_type;
 
 			if (parent != null)
 				parent_type = parent;
 			else
 				parent_type = pmodule.assemblyb.corlib_object_type;
 
+			old_parent_type = parent_type;
 			parent_type = parent_type.InternalResolve ();
+			/*This avoids corlib to have self references.*/
+			if (parent_type == typeof (object) || parent_type == typeof (ValueType))
+				parent_type = old_parent_type;
+
 			ConstructorInfo parent_constructor =
 				parent_type.GetConstructor (
 					BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance,
@@ -1430,14 +1435,6 @@ namespace System.Reflection.Emit
 			}
 		}
 		
-		//
-		// Used internally by mcs only
-		//
-		internal void SetCharSet (TypeAttributes ta)
-		{
-			this.attrs = ta;
-		}
-
 		public void SetCustomAttribute (CustomAttributeBuilder customBuilder)
 		{
 			if (customBuilder == null)
@@ -1822,6 +1819,11 @@ namespace System.Reflection.Emit
 			if (constructor == null)
 				throw new NullReferenceException (); //MS raises this instead of an ArgumentNullException
 
+			if (!constructor.DeclaringType.IsGenericTypeDefinition)
+				throw new ArgumentException ("constructor declaring type is not a generic type definition", "constructor");
+			if (constructor.DeclaringType != type.GetGenericTypeDefinition ())
+				throw new ArgumentException ("constructor declaring type is not the generic type definition of type", "constructor");
+
 			ConstructorInfo res = type.GetConstructor (constructor);
 			if (res == null)
 				throw new ArgumentException ("constructor not found");
@@ -1885,12 +1887,29 @@ namespace System.Reflection.Emit
 			if (field is FieldOnTypeBuilderInst)
 				throw new ArgumentException ("The specified field must be declared on a generic type definition.", "field");
 
+			if (field.DeclaringType != type.GetGenericTypeDefinition ())
+				throw new ArgumentException ("field declaring type is not the generic type definition of type", "method");
+
 			FieldInfo res = type.GetField (field);
 			if (res == null)
 				throw new System.Exception ("field not found");
 			else
 				return res;
 		}
+
+		internal TypeCode GetTypeCodeInternal () {
+			if (parent == pmodule.assemblyb.corlib_enum_type) {
+				for (int i = 0; i < num_fields; ++i) {
+					FieldBuilder f = fields [i];
+					if (!f.IsStatic)
+						return Type.GetTypeCode (f.FieldType);
+				}
+				throw new InvalidOperationException ("Enum basetype field not defined");
+			} else {
+				return Type.GetTypeCodeInternal (this);
+			}
+		}
+
 
 		void _TypeBuilder.GetIDsOfNames([In] ref Guid riid, IntPtr rgszNames, uint cNames, uint lcid, IntPtr rgDispId)
 		{

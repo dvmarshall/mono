@@ -17,6 +17,10 @@ MINI_OP(OP_ICOMPARE_IMM,	"icompare_imm", NONE, IREG, NONE)
 MINI_OP(OP_LCOMPARE_IMM,	"lcompare_imm", NONE, LREG, NONE)
 MINI_OP(OP_LOCAL,	"local", NONE, NONE, NONE)
 MINI_OP(OP_ARG,		"arg", NONE, NONE, NONE)
+/*
+ * Represents passing a valuetype argument which has not been decomposed yet.
+ * inst_p0 points to the call.
+ */
 MINI_OP(OP_OUTARG_VT,	"outarg_vt", NONE, VREG, NONE)
 MINI_OP(OP_OUTARG_VTRETADDR, "outarg_vtretaddr", IREG, NONE, NONE)
 MINI_OP(OP_SETRET,	"setret", NONE, IREG, NONE)
@@ -88,7 +92,7 @@ MINI_OP(OP_STORE_MEMBASE_REG,"store_membase_reg", IREG, IREG, NONE)
 MINI_OP(OP_STOREI1_MEMBASE_REG, "storei1_membase_reg", IREG, IREG, NONE)
 MINI_OP(OP_STOREI2_MEMBASE_REG, "storei2_membase_reg", IREG, IREG, NONE)
 MINI_OP(OP_STOREI4_MEMBASE_REG, "storei4_membase_reg", IREG, IREG, NONE)
-MINI_OP(OP_STOREI8_MEMBASE_REG, "storei8_membase_reg", IREG, IREG, NONE)
+MINI_OP(OP_STOREI8_MEMBASE_REG, "storei8_membase_reg", IREG, LREG, NONE)
 MINI_OP(OP_STORER4_MEMBASE_REG, "storer4_membase_reg", IREG, FREG, NONE)
 MINI_OP(OP_STORER8_MEMBASE_REG, "storer8_membase_reg", IREG, FREG, NONE)
 
@@ -135,8 +139,8 @@ MINI_OP(OP_LOADU2_MEMINDEX,"loadu2_memindex", IREG, IREG, IREG)
 MINI_OP(OP_LOADI4_MEMINDEX,"loadi4_memindex", IREG, IREG, IREG)
 MINI_OP(OP_LOADU4_MEMINDEX,"loadu4_memindex", IREG, IREG, IREG)
 MINI_OP(OP_LOADI8_MEMINDEX,"loadi8_memindex", IREG, IREG, IREG)
-MINI_OP(OP_LOADR4_MEMINDEX,"loadr4_memindex", IREG, IREG, IREG)
-MINI_OP(OP_LOADR8_MEMINDEX,"loadr8_memindex", IREG, IREG, IREG)
+MINI_OP(OP_LOADR4_MEMINDEX,"loadr4_memindex", FREG, IREG, IREG)
+MINI_OP(OP_LOADR8_MEMINDEX,"loadr8_memindex", FREG, IREG, IREG)
 /* indexed stores: store sreg1 at (destbasereg + sreg2) */
 /* MONO_IS_STORE_MEMINDEX depends on the order here */
 MINI_OP(OP_STORE_MEMINDEX,"store_memindex", IREG, IREG, IREG)
@@ -144,8 +148,8 @@ MINI_OP(OP_STOREI1_MEMINDEX,"storei1_memindex", IREG, IREG, IREG)
 MINI_OP(OP_STOREI2_MEMINDEX,"storei2_memindex", IREG, IREG, IREG)
 MINI_OP(OP_STOREI4_MEMINDEX,"storei4_memindex", IREG, IREG, IREG)
 MINI_OP(OP_STOREI8_MEMINDEX,"storei8_memindex", IREG, IREG, IREG)
-MINI_OP(OP_STORER4_MEMINDEX,"storer4_memindex", IREG, IREG, IREG)
-MINI_OP(OP_STORER8_MEMINDEX,"storer8_memindex", IREG, IREG, IREG)
+MINI_OP(OP_STORER4_MEMINDEX,"storer4_memindex", IREG, FREG, IREG)
+MINI_OP(OP_STORER8_MEMINDEX,"storer8_memindex", IREG, FREG, IREG)
 
 MINI_OP(OP_LOAD_MEM,"load_mem", IREG, NONE, NONE)
 MINI_OP(OP_LOADU1_MEM,"loadu1_mem", IREG, NONE, NONE)
@@ -587,6 +591,9 @@ MINI_OP(OP_MEMSET, "memset", NONE, NONE, NONE)
 MINI_OP(OP_SAVE_LMF, "save_lmf", NONE, NONE, NONE)
 MINI_OP(OP_RESTORE_LMF, "restore_lmf", NONE, NONE, NONE)
 
+/* write barrier */
+MINI_OP(OP_CARD_TABLE_WBARRIER, "card_table_wbarrier", NONE, IREG, IREG)
+
 /* arch-dep tls access */
 MINI_OP(OP_TLS_GET,            "tls_get", IREG, NONE, NONE)
 
@@ -624,6 +631,8 @@ MINI_OP(OP_RCPPS, "rcpps", XREG, XREG, NONE)
 MINI_OP(OP_PSHUFLEW_HIGH, "pshufflew_high", XREG, XREG, NONE)
 MINI_OP(OP_PSHUFLEW_LOW, "pshufflew_low", XREG, XREG, NONE)
 MINI_OP(OP_PSHUFLED, "pshuffled", XREG, XREG, NONE)
+MINI_OP(OP_SHUFPS, "shufps", XREG, XREG, XREG)
+MINI_OP(OP_SHUFPD, "shufpd", XREG, XREG, XREG)
 
 MINI_OP(OP_ADDPD, "addpd", XREG, XREG, XREG)
 MINI_OP(OP_DIVPD, "divpd", XREG, XREG, XREG)
@@ -764,6 +773,13 @@ MINI_OP(OP_EXTRACT_U1, "extract_u1", IREG, XREG, NONE)
 MINI_OP(OP_EXTRACT_R8, "extract_r8", FREG, XREG, NONE)
 MINI_OP(OP_EXTRACT_I8, "extract_i8", LREG, XREG, NONE)
 
+/* Used by LLVM */
+MINI_OP(OP_INSERT_I1, "insert_i1", XREG, XREG, IREG)
+MINI_OP(OP_INSERT_I4, "insert_i4", XREG, XREG, IREG)
+MINI_OP(OP_INSERT_I8, "insert_i8", XREG, XREG, LREG)
+MINI_OP(OP_INSERT_R4, "insert_r4", XREG, XREG, FREG)
+MINI_OP(OP_INSERT_R8, "insert_r8", XREG, XREG, FREG)
+
 MINI_OP(OP_INSERT_I2, "insert_i2", XREG, XREG, IREG)
 
 MINI_OP(OP_EXTRACTX_U2, "extractx_u2", IREG, XREG, NONE)
@@ -790,6 +806,15 @@ MINI_OP(OP_EXPAND_I8, "expand_i8", XREG, IREG, NONE)
 MINI_OP(OP_EXPAND_R8, "expand_r8", XREG, FREG, NONE)
 
 MINI_OP(OP_PREFETCH_MEMBASE, "prefetch_membase", NONE, IREG, NONE)
+
+MINI_OP(OP_CVTDQ2PD, "cvtdq2pd", XREG, XREG, NONE)
+MINI_OP(OP_CVTDQ2PS, "cvtdq2ps", XREG, XREG, NONE)
+MINI_OP(OP_CVTPD2DQ, "cvtpd2dq", XREG, XREG, NONE)
+MINI_OP(OP_CVTPD2PS, "cvtpd2ps", XREG, XREG, NONE)
+MINI_OP(OP_CVTPS2DQ, "cvtps2dq", XREG, XREG, NONE)
+MINI_OP(OP_CVTPS2PD, "cvtps2pd", XREG, XREG, NONE)
+MINI_OP(OP_CVTTPD2DQ, "cvttpd2dq", XREG, XREG, NONE)
+MINI_OP(OP_CVTTPS2DQ, "cvttps2dq", XREG, XREG, NONE)
 
 #endif
 
@@ -867,7 +892,34 @@ MINI_OP(OP_LIVERANGE_START, "liverange_start", NONE, NONE, NONE)
  */
 MINI_OP(OP_LIVERANGE_END, "liverange_end", NONE, NONE, NONE)
 
+/* GC support */
+/*
+ * mono_arch_output_basic_block () will set the backend.pc_offset field to the current pc
+ * offset.
+ */
+MINI_OP(OP_GC_LIVENESS_DEF, "gc_liveness_def", NONE, NONE, NONE)
+MINI_OP(OP_GC_LIVENESS_USE, "gc_liveness_use", NONE, NONE, NONE)
+
+/*
+ * This marks the location inside a basic block where a GC tracked spill slot has been
+ * defined. The spill slot is assumed to be alive until the end of the bblock.
+ */
+MINI_OP(OP_GC_SPILL_SLOT_LIVENESS_DEF, "gc_spill_slot_liveness_def", NONE, NONE, NONE)
+
+/*
+ * This marks the location inside a basic block where a GC tracked param area slot has
+ * been defined. The slot is assumed to be alive until the next call.
+ */
+MINI_OP(OP_GC_PARAM_SLOT_LIVENESS_DEF, "gc_param_slot_liveness_def", NONE, NONE, NONE)
+
 /* Arch specific opcodes */
+/* #if defined(__native_client_codegen__) || defined(__native_client__) */
+/* We have to define these in terms of the TARGET defines, not NaCl defines */
+/* because genmdesc.pl doesn't have multiple defines per platform.          */
+#if defined(TARGET_AMD64) || defined(TARGET_X86)
+MINI_OP(OP_NACL_GC_SAFE_POINT,     "nacl_gc_safe_point", IREG, NONE, NONE)
+#endif
+
 #if defined(TARGET_X86) || defined(TARGET_AMD64)
 MINI_OP(OP_X86_TEST_NULL,          "x86_test_null", NONE, IREG, NONE)
 MINI_OP(OP_X86_COMPARE_MEMBASE_REG,"x86_compare_membase_reg", NONE, IREG, IREG)

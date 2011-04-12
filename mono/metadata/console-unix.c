@@ -6,6 +6,9 @@
  *
  * Copyright (C) 2005-2009 Novell, Inc. (http://www.novell.com)
  */
+#if defined(__native_client__)
+#include "console-null.c"
+#else
 
 #include <config.h>
 #include <glib.h>
@@ -25,6 +28,7 @@
 #include <mono/metadata/object-internals.h>
 #include <mono/metadata/class-internals.h>
 #include <mono/metadata/domain-internals.h>
+#include <mono/metadata/gc-internal.h>
 #include <mono/metadata/metadata.h>
 #include <mono/metadata/threadpool.h>
 
@@ -197,13 +201,15 @@ terminal_get_dimensions (void)
 static void
 tty_teardown (void)
 {
+	int unused;
+
 	MONO_ARCH_SAVE_REGS;
 
 	if (!setup_finished)
 		return;
 
 	if (teardown_str != NULL) {
-		write (STDOUT_FILENO, teardown_str, strlen (teardown_str));
+		unused = write (STDOUT_FILENO, teardown_str, strlen (teardown_str));
 		g_free (teardown_str);
 		teardown_str = NULL;
 	}
@@ -226,6 +232,7 @@ do_console_cancel_event (void)
 	MonoMethod *im;
 	MonoVTable *vtable;
 
+	/* FIXME: this should likely iterate all the domains, instead */
 	if (!domain->domain)
 		return;
 
@@ -253,6 +260,17 @@ do_console_cancel_event (void)
 	mono_thread_pool_add ((MonoObject *) load_value, msg, NULL, NULL);
 }
 
+static int need_cancel = FALSE;
+/* this is executed from the finalizer thread */
+void
+mono_console_handle_async_ops (void)
+{
+	if (need_cancel) {
+		need_cancel = FALSE;
+		do_console_cancel_event ();
+	}
+}
+
 static gboolean in_sigint;
 static void
 sigint_handler (int signo)
@@ -265,7 +283,8 @@ sigint_handler (int signo)
 
 	in_sigint = TRUE;
 	save_errno = errno;
-	do_console_cancel_event ();
+	need_cancel = TRUE;
+	mono_gc_finalize_notify ();
 	errno = save_errno;
 	in_sigint = FALSE;
 }
@@ -275,11 +294,12 @@ static struct sigaction save_sigcont, save_sigint, save_sigwinch;
 static void
 sigcont_handler (int signo, void *the_siginfo, void *data)
 {
+	int unused;
 	// Ignore error, there is not much we can do in the sigcont handler.
 	tcsetattr (STDIN_FILENO, TCSANOW, &mono_attr);
 
 	if (keypad_xmit_str != NULL)
-		write (STDOUT_FILENO, keypad_xmit_str, strlen (keypad_xmit_str));
+		unused = write (STDOUT_FILENO, keypad_xmit_str, strlen (keypad_xmit_str));
 
 	// Call previous handler
 	if (save_sigcont.sa_sigaction != NULL &&
@@ -485,3 +505,5 @@ ves_icall_System_ConsoleDriver_TtySetup (MonoString *keypad, MonoString *teardow
 
 	return TRUE;
 }
+#endif /* #if defined(__native_client__) */
+

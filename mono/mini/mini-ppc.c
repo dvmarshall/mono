@@ -508,7 +508,7 @@ mono_arch_get_delegate_invoke_impl (MonoMethodSignature *sig, gboolean has_targe
 }
 
 gpointer
-mono_arch_get_this_arg_from_call (MonoGenericSharingContext *gsctx, MonoMethodSignature *sig, mgreg_t *regs, guint8 *code)
+mono_arch_get_this_arg_from_call (mgreg_t *regs, guint8 *code)
 {
 	mgreg_t *r = (mgreg_t*)regs;
 
@@ -564,7 +564,16 @@ linux_find_auxv (int *count)
 void
 mono_arch_cpu_init (void)
 {
-#ifdef __APPLE__
+}
+
+/*
+ * Initialize architecture specific code.
+ */
+void
+mono_arch_init (void)
+{
+#if defined(MONO_CROSS_COMPILE)
+#elif defined(__APPLE__)
 	int mib [3];
 	size_t len;
 	mib [0] = CTL_HW;
@@ -618,7 +627,6 @@ mono_arch_cpu_init (void)
 #elif defined(G_COMPILER_CODEWARRIOR)
 	cachelinesize = 32;
 	cachelineinc = 32;
-#elif defined(MONO_CROSS_COMPILE)
 #else
 //#error Need a way to get cache line size
 #endif
@@ -629,14 +637,6 @@ mono_arch_cpu_init (void)
 
 	if (mono_cpu_count () > 1)
 		cpu_hw_caps |= PPC_SMP_CAPABLE;
-}
-
-/*
- * Initialize architecture specific code.
- */
-void
-mono_arch_init (void)
-{
 	InitializeCriticalSection (&mini_arch_mutex);
 
 	ss_trigger_page = mono_valloc (NULL, mono_pagesize (), MONO_MMAP_READ|MONO_MMAP_32BIT);
@@ -1462,6 +1462,11 @@ mono_arch_allocate_vars (MonoCompile *m)
 			}
 			if (MONO_TYPE_ISSTRUCT (sig->params [i]) && size < sizeof (gpointer))
 				size = align = sizeof (gpointer);
+			/* 
+			 * Use at least 4/8 byte alignment, since these might be passed in registers, and
+			 * they are saved using std in the prolog.
+			 */
+			align = sizeof (gpointer);
 			offset += align - 1;
 			offset &= ~(align - 1);
 			inst->inst_offset = offset;
@@ -3546,7 +3551,22 @@ mono_arch_output_basic_block (MonoCompile *cfg, MonoBasicBlock *bb)
 			}
 			break;
 		case OP_BREAK:
-			ppc_break (code);
+			/*
+			 * gdb does not like encountering a trap in the debugged code. So 
+			 * instead of emitting a trap, we emit a call a C function and place a 
+			 * breakpoint there.
+			 */
+			//ppc_break (code);
+			ppc_mr (code, ppc_r3, ins->sreg1);
+			mono_add_patch_info (cfg, code - cfg->native_code, MONO_PATCH_INFO_INTERNAL_METHOD, 
+					     (gpointer)"mono_break");
+			if ((FORCE_INDIR_CALL || cfg->method->dynamic) && !cfg->compile_aot) {
+				ppc_load_func (code, ppc_r0, 0);
+				ppc_mtlr (code, ppc_r0);
+				ppc_blrl (code);
+			} else {
+				ppc_bl (code, 0);
+			}
 			break;
 		case OP_ADDCC:
 		case OP_IADDCC:
@@ -3701,7 +3721,7 @@ mono_arch_output_basic_block (MonoCompile *cfg, MonoBasicBlock *bb)
 				ppc_sldi (code, ppc_r0, ppc_r0, 32);
 #endif
 			ppc_compare (code, 0, ins->sreg1, ppc_r0);
-			EMIT_COND_SYSTEM_EXCEPTION_FLAGS (PPC_BR_TRUE, PPC_BR_EQ, "ArithmeticException");
+			EMIT_COND_SYSTEM_EXCEPTION_FLAGS (PPC_BR_TRUE, PPC_BR_EQ, "OverflowException");
 			ppc_patch (divisor_is_m1, code);
 			 /* XER format: SO, OV, CA, reserved [21 bits], count [8 bits]
 			 */
@@ -4671,7 +4691,7 @@ mono_arch_register_lowlevel_calls (void)
 
 #ifndef DISABLE_JIT
 void
-mono_arch_patch_code (MonoMethod *method, MonoDomain *domain, guint8 *code, MonoJumpInfo *ji, gboolean run_cctors)
+mono_arch_patch_code (MonoMethod *method, MonoDomain *domain, guint8 *code, MonoJumpInfo *ji, MonoCodeManager *dyn_code_mp, gboolean run_cctors)
 {
 	MonoJumpInfo *patch_info;
 	gboolean compile_aot = !run_cctors;
@@ -4827,7 +4847,7 @@ mono_arch_emit_prolog (MonoCompile *cfg)
 		tracing = 1;
 
 	sig = mono_method_signature (method);
-	cfg->code_size = MONO_PPC_32_64_CASE (260, 384) + sig->param_count * 20;
+	cfg->code_size = 512 + sig->param_count * 32;
 	code = cfg->native_code = g_malloc (cfg->code_size);
 
 	cfa_offset = 0;
@@ -4957,7 +4977,7 @@ mono_arch_emit_prolog (MonoCompile *cfg)
 					} else {
 						if (ppc_is_imm32 (inst->inst_offset)) {
 							ppc_addis (code, ppc_r11, inst->inst_basereg, ppc_ha(inst->inst_offset));
-							ppc_stb (code, ainfo->reg, ppc_r11, inst->inst_offset);
+							ppc_stb (code, ainfo->reg, inst->inst_offset, ppc_r11);
 						} else {
 							ppc_load (code, ppc_r11, inst->inst_offset);
 							ppc_stbx (code, ainfo->reg, inst->inst_basereg, ppc_r11);
@@ -4970,7 +4990,7 @@ mono_arch_emit_prolog (MonoCompile *cfg)
 					} else {
 						if (ppc_is_imm32 (inst->inst_offset)) {
 							ppc_addis (code, ppc_r11, inst->inst_basereg, ppc_ha(inst->inst_offset));
-							ppc_sth (code, ainfo->reg, ppc_r11, inst->inst_offset);
+							ppc_sth (code, ainfo->reg, inst->inst_offset, ppc_r11);
 						} else {
 							ppc_load (code, ppc_r11, inst->inst_offset);
 							ppc_sthx (code, ainfo->reg, inst->inst_basereg, ppc_r11);
@@ -4984,7 +5004,7 @@ mono_arch_emit_prolog (MonoCompile *cfg)
 					} else {
 						if (ppc_is_imm32 (inst->inst_offset)) {
 							ppc_addis (code, ppc_r11, inst->inst_basereg, ppc_ha(inst->inst_offset));
-							ppc_stw (code, ainfo->reg, ppc_r11, inst->inst_offset);
+							ppc_stw (code, ainfo->reg, inst->inst_offset, ppc_r11);
 						} else {
 							ppc_load (code, ppc_r11, inst->inst_offset);
 							ppc_stwx (code, ainfo->reg, inst->inst_basereg, ppc_r11);
@@ -5018,7 +5038,7 @@ mono_arch_emit_prolog (MonoCompile *cfg)
 					} else {
 						if (ppc_is_imm32 (inst->inst_offset)) {
 							ppc_addis (code, ppc_r11, inst->inst_basereg, ppc_ha(inst->inst_offset));
-							ppc_stptr (code, ainfo->reg, ppc_r11, inst->inst_offset);
+							ppc_stptr (code, ainfo->reg, inst->inst_offset, ppc_r11);
 						} else {
 							ppc_load (code, ppc_r11, inst->inst_offset);
 							ppc_stptr_indexed (code, ainfo->reg, inst->inst_basereg, ppc_r11);
@@ -5038,7 +5058,7 @@ mono_arch_emit_prolog (MonoCompile *cfg)
 					} else {
 						if (ppc_is_imm32 (inst->inst_offset)) {
 							ppc_addis (code, ppc_r11, inst->inst_basereg, ppc_ha(inst->inst_offset));
-							ppc_stb (code, ppc_r0, ppc_r11, inst->inst_offset);
+							ppc_stb (code, ppc_r0, inst->inst_offset, ppc_r11);
 						} else {
 							ppc_load (code, ppc_r11, inst->inst_offset);
 							ppc_stbx (code, ppc_r0, inst->inst_basereg, ppc_r11);
@@ -5051,7 +5071,7 @@ mono_arch_emit_prolog (MonoCompile *cfg)
 					} else {
 						if (ppc_is_imm32 (inst->inst_offset)) {
 							ppc_addis (code, ppc_r11, inst->inst_basereg, ppc_ha(inst->inst_offset));
-							ppc_sth (code, ppc_r0, ppc_r11, inst->inst_offset);
+							ppc_sth (code, ppc_r0, inst->inst_offset, ppc_r11);
 						} else {
 							ppc_load (code, ppc_r11, inst->inst_offset);
 							ppc_sthx (code, ppc_r0, inst->inst_basereg, ppc_r11);
@@ -5065,7 +5085,7 @@ mono_arch_emit_prolog (MonoCompile *cfg)
 					} else {
 						if (ppc_is_imm32 (inst->inst_offset)) {
 							ppc_addis (code, ppc_r11, inst->inst_basereg, ppc_ha(inst->inst_offset));
-							ppc_stw (code, ppc_r0, ppc_r11, inst->inst_offset);
+							ppc_stw (code, ppc_r0, inst->inst_offset, ppc_r11);
 						} else {
 							ppc_load (code, ppc_r11, inst->inst_offset);
 							ppc_stwx (code, ppc_r0, inst->inst_basereg, ppc_r11);
@@ -5103,7 +5123,7 @@ mono_arch_emit_prolog (MonoCompile *cfg)
 					} else {
 						if (ppc_is_imm32 (inst->inst_offset)) {
 							ppc_addis (code, ppc_r11, inst->inst_basereg, ppc_ha(inst->inst_offset));
-							ppc_stptr (code, ppc_r0, ppc_r11, inst->inst_offset);
+							ppc_stptr (code, ppc_r0, inst->inst_offset, ppc_r11);
 						} else {
 							ppc_load (code, ppc_r11, inst->inst_offset);
 							ppc_stptr_indexed (code, ppc_r0, inst->inst_basereg, ppc_r11);
@@ -5425,6 +5445,8 @@ exception_id_by_name (const char *name)
 		return MONO_EXC_NULL_REF;
 	if (strcmp (name, "ArrayTypeMismatchException") == 0)
 		return MONO_EXC_ARRAY_TYPE_MISMATCH;
+	if (strcmp (name, "ArgumentException") == 0)
+		return MONO_EXC_ARGUMENT;
 	g_error ("Unknown intrinsic exception %s\n", name);
 	return 0;
 }

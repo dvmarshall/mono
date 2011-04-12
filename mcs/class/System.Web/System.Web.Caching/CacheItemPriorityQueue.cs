@@ -25,6 +25,7 @@
 // WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 //
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
@@ -41,6 +42,8 @@ namespace System.Web.Caching
 		CacheItem[] heap;
 		int heapSize = 0;
 		int heapCount = 0;
+
+		// See comment for the cacheLock field at top of System.Web.Caching/Cache.cs
 		ReaderWriterLockSlim queueLock;
 
 		public int Count {
@@ -57,6 +60,24 @@ namespace System.Web.Caching
 			InitDebugMode ();
 		}
 
+		void ResizeHeap (int newSize)
+		{
+			CacheItem[] oldHeap = heap;
+			Array.Resize <CacheItem> (ref heap, newSize);
+			heapSize = newSize;
+			
+			// TODO: The code helps the GC in case the array is pinned. In such instance clearing
+			// the old array will release references to the CacheItems stored in there. If the
+			// array is not pinned, otoh, this is a waste of time.
+			// Currently we don't know if the array is pinned or not so it's safer to always clear it.
+			// However when we have more precise stack scanning the code should be
+			// revisited.
+			if (oldHeap != null) {
+				((IList)oldHeap).Clear ();
+				oldHeap = null;
+			}
+		}
+		
 		CacheItem[] GetHeapWithGrow ()
 		{
 			if (heap == null) {
@@ -66,10 +87,8 @@ namespace System.Web.Caching
 				return heap;
 			}
 
-			if (heapCount >= heapSize) {
-				heapSize <<= 1;
-				Array.Resize <CacheItem> (ref heap, heapSize);
-			}
+			if (heapCount >= heapSize)
+				ResizeHeap (heapSize <<= 1);
 
 			return heap;
 		}
@@ -83,7 +102,7 @@ namespace System.Web.Caching
 				int halfTheSize = heapSize >> 1;
 
 				if (heapCount < halfTheSize)
-					Array.Resize <CacheItem> (ref heap, halfTheSize + (heapCount / 3));
+					ResizeHeap (halfTheSize + (heapCount / 3));
 			}
 			
 			return heap;
@@ -94,20 +113,18 @@ namespace System.Web.Caching
 			if (item == null)
 				return;
 
-			bool locked = false;
 			CacheItem[] heap;
 			
 			try {
 				queueLock.EnterWriteLock ();
-				locked = true;
 				heap = GetHeapWithGrow ();
 				heap [heapCount++] = item;
 				BubbleUp (heap);
 				
 				AddSequenceEntry (item, EDSequenceEntryType.Enqueue);
 			} finally {
-				if (locked)
-					queueLock.ExitWriteLock ();
+				// See comment at the top of the file, above queueLock declaration
+				queueLock.ExitWriteLock ();
 			}
 		}
 
@@ -115,12 +132,10 @@ namespace System.Web.Caching
 		{
 			CacheItem ret = null;
 			CacheItem[] heap;
-			bool locked = false;
 			int index;
 			
 			try {
 				queueLock.EnterWriteLock ();
-				locked = true;
 				heap = GetHeapWithShrink ();
 				if (heap == null || heapCount == 0)
 					return null;
@@ -136,19 +151,17 @@ namespace System.Web.Caching
 				AddSequenceEntry (ret, EDSequenceEntryType.Dequeue);
 				return ret;
 			} finally {
-				if (locked)
-					queueLock.ExitWriteLock ();
+				// See comment at the top of the file, above queueLock declaration
+				queueLock.ExitWriteLock ();
 			}
 		}
 
 		public CacheItem Peek ()
 		{
-			bool locked = false;
 			CacheItem ret;
 			
 			try {
 				queueLock.EnterReadLock ();
-				locked = true;
 				if (heap == null || heapCount == 0)
 					return null;
 
@@ -157,8 +170,8 @@ namespace System.Web.Caching
 				
 				return ret;
 			} finally {
-				if (locked)
-					queueLock.ExitReadLock ();
+				// See comment at the top of the file, above queueLock declaration
+				queueLock.ExitReadLock ();
 			}
 		}
 		

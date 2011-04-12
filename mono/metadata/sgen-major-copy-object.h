@@ -1,3 +1,26 @@
+/*
+ * Copyright 2001-2003 Ximian, Inc
+ * Copyright 2003-2010 Novell, Inc.
+ * 
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files (the
+ * "Software"), to deal in the Software without restriction, including
+ * without limitation the rights to use, copy, modify, merge, publish,
+ * distribute, sublicense, and/or sell copies of the Software, and to
+ * permit persons to whom the Software is furnished to do so, subject to
+ * the following conditions:
+ * 
+ * The above copyright notice and this permission notice shall be
+ * included in all copies or substantial portions of the Software.
+ * 
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+ * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+ * LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+ * OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+ * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
 extern long long stat_copy_object_called_nursery;
 extern long long stat_objects_copied_nursery;
 
@@ -54,7 +77,7 @@ par_copy_object_no_checks (char *destination, MonoVTable *vt, void *obj, mword o
 		mono_sgen_register_moved_object (obj, destination);
 	obj = destination;
 	if (queue) {
-		DEBUG (9, fprintf (gc_debug_file, "Enqueuing gray object %p (%s)\n", obj, safe_name (obj)));
+		DEBUG (9, fprintf (gc_debug_file, "Enqueuing gray object %p (%s)\n", obj, mono_sgen_safe_name (obj)));
 		GRAY_OBJECT_ENQUEUE (queue, obj);
 	}
 }
@@ -66,6 +89,11 @@ copy_object_no_checks (void *obj, SgenGrayQueue *queue)
 	gboolean has_references = SGEN_VTABLE_HAS_REFERENCES (vt);
 	mword objsize = SGEN_ALIGN_UP (mono_sgen_par_object_get_size (vt, (MonoObject*)obj));
 	char *destination = major_alloc_object (objsize, has_references);
+
+	if (G_UNLIKELY (!destination)) {
+		mono_sgen_pin_object (obj, queue);
+		return obj;
+	}
 
 	par_copy_object_no_checks (destination, vt, obj, objsize, has_references ? queue : NULL);
 
@@ -119,14 +147,14 @@ copy_object (void **obj_slot, SgenGrayQueue *queue)
 	 */
 
 	if ((forwarded = SGEN_OBJECT_IS_FORWARDED (obj))) {
-		DEBUG (9, g_assert (((MonoVTable*)LOAD_VTABLE(obj))->gc_descr));
+		DEBUG (9, g_assert (((MonoVTable*)SGEN_LOAD_VTABLE(obj))->gc_descr));
 		DEBUG (9, fprintf (gc_debug_file, " (already forwarded to %p)\n", forwarded));
 		HEAVY_STAT (++stat_nursery_copy_object_failed_forwarded);
 		*obj_slot = forwarded;
 		return;
 	}
 	if (SGEN_OBJECT_IS_PINNED (obj)) {
-		DEBUG (9, g_assert (((MonoVTable*)LOAD_VTABLE(obj))->gc_descr));
+		DEBUG (9, g_assert (((MonoVTable*)SGEN_LOAD_VTABLE(obj))->gc_descr));
 		DEBUG (9, fprintf (gc_debug_file, " (pinned, no change)\n"));
 		HEAVY_STAT (++stat_nursery_copy_object_failed_pinned);
 		return;

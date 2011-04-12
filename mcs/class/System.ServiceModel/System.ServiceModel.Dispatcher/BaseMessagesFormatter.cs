@@ -29,6 +29,7 @@
 //
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
 using System.Runtime.Serialization;
 using System.ServiceModel;
@@ -111,6 +112,7 @@ namespace System.ServiceModel.Dispatcher
 		bool isAsync;
 		ParameterInfo [] requestMethodParams;
 		ParameterInfo [] replyMethodParams;
+		List<Type> operation_known_types = new List<Type> ();
 
 		public BaseMessagesFormatter (MessageDescriptionCollection messages)
 		{
@@ -133,8 +135,15 @@ namespace System.ServiceModel.Dispatcher
 			methodParams = desc.EndMethod.GetParameters ();
 			replyMethodParams = new ParameterInfo [methodParams.Length - 1];
 			Array.Copy (methodParams, replyMethodParams, replyMethodParams.Length);
+			operation_known_types.AddRange (desc.KnownTypes);
 		}
 
+		// FIXME: this should be refactored and eliminated.
+		// XmlSerializerFormatAttribute and DataContractFormatAttribute
+		// should be handled at ContractDescription.GetContract (to fill
+		// IOperationBehavior for each).
+		//
+		// Fixing the issue above should also fix "Formatter is already filled at initial state" issue described in EndpointDispatcher.cs and ContractDescription.cs.
 		public static BaseMessagesFormatter Create (OperationDescription desc)
 		{
 			MethodInfo attrProvider = desc.SyncMethod ?? desc.BeginMethod;
@@ -152,9 +161,14 @@ namespace System.ServiceModel.Dispatcher
 			return new DataContractMessagesFormatter (desc, dataAttr);
 		}
 
+		public IEnumerable<Type> OperationKnownTypes {
+			get { return operation_known_types; }
+		}
+
 		protected abstract Message PartsToMessage (
 			MessageDescription md, MessageVersion version, string action, object [] parts);
 		protected abstract object [] MessageToParts (MessageDescription md, Message message);
+		protected abstract Dictionary<MessageHeaderDescription,object> MessageToHeaderObjects (MessageDescription md, Message message);
 
 		public Message SerializeRequest (
 			MessageVersion version, object [] parameters)
@@ -165,15 +179,21 @@ namespace System.ServiceModel.Dispatcher
 					md = mdi;
 
 			object [] parts = CreatePartsArray (md.Body);
+			var headers = md.Headers.Count > 0 ? new Dictionary<MessageHeaderDescription,object> () : null;
 			if (md.MessageType != null)
-				MessageObjectToParts (md, parameters [0], parts);
+				MessageObjectToParts (md, parameters [0], headers, parts);
 			else {
 				int index = 0;
 				foreach (ParameterInfo pi in requestMethodParams)
 					if (!pi.IsOut)
 						parts [index++] = parameters [pi.Position];
 			}
-			return PartsToMessage (md, version, md.Action, parts);
+			var msg = PartsToMessage (md, version, md.Action, parts);
+			if (headers != null)
+				foreach (var pair in headers)
+					if (pair.Value != null)
+						msg.Headers.Add (CreateHeader (pair.Key, pair.Value));
+			return msg;
 		}
 
 		public Message SerializeReply (
@@ -187,8 +207,9 @@ namespace System.ServiceModel.Dispatcher
 					md = mdi;
 
 			object [] parts = CreatePartsArray (md.Body);
+			var headers = md.Headers.Count > 0 ? new Dictionary<MessageHeaderDescription,object> () : null;
 			if (md.MessageType != null)
-				MessageObjectToParts (md, result, parts);
+				MessageObjectToParts (md, result, headers, parts);
 			else {
 				if (HasReturnValue (md.Body))
 					parts [0] = result;
@@ -199,7 +220,17 @@ namespace System.ServiceModel.Dispatcher
 				parts [index++] = parameters [paramsIdx++];
 			}
 			string action = version.Addressing == AddressingVersion.None ? null : md.Action;
-			return PartsToMessage (md, version, action, parts);
+			var msg = PartsToMessage (md, version, action, parts);
+			if (headers != null)
+				foreach (var pair in headers)
+					if (pair.Value != null)
+						msg.Headers.Add (CreateHeader (pair.Key, pair.Value));
+			return msg;
+		}
+
+		MessageHeader CreateHeader (MessageHeaderDescription mh, object value)
+		{
+			return MessageHeader.CreateHeader (mh.Name, mh.Namespace, value, mh.MustUnderstand, mh.Actor, mh.Relay);
 		}
 
 		public void DeserializeRequest (Message message, object [] parameters)
@@ -209,6 +240,7 @@ namespace System.ServiceModel.Dispatcher
 			if (md == null)
 				throw new ActionNotSupportedException (String.Format ("Action '{0}' is not supported by this operation.", action));
 
+			var headers = MessageToHeaderObjects (md, message);
 			object [] parts = MessageToParts (md, message);
 			if (md.MessageType != null) {
 #if NET_2_1
@@ -216,7 +248,7 @@ namespace System.ServiceModel.Dispatcher
 #else
 				parameters [0] = Activator.CreateInstance (md.MessageType, true);
 #endif
-				PartsToMessageObject (md, parts, parameters [0]);
+				PartsToMessageObject (md, headers, parts, parameters [0]);
 			}
 			else
 			{
@@ -236,6 +268,7 @@ namespace System.ServiceModel.Dispatcher
 				if (!mdi.IsRequest)
 					md = mdi;
 
+			var headers = MessageToHeaderObjects (md, message);
 			object [] parts = MessageToParts (md, message);
 			if (md.MessageType != null) {
 #if NET_2_1
@@ -243,7 +276,7 @@ namespace System.ServiceModel.Dispatcher
 #else
 				object msgObject = Activator.CreateInstance (md.MessageType, true);
 #endif
-				PartsToMessageObject (md, parts, msgObject);
+				PartsToMessageObject (md, headers, parts, msgObject);
 				return msgObject;
 			}
 			else {
@@ -255,8 +288,17 @@ namespace System.ServiceModel.Dispatcher
 			}
 		}
 
-		void PartsToMessageObject (MessageDescription md, object [] parts, object msgObject)
+		void PartsToMessageObject (MessageDescription md, Dictionary<MessageHeaderDescription,object> headers, object [] parts, object msgObject)
 		{
+			if (headers != null)
+				foreach (var pair in headers) {
+					var mi = pair.Key.MemberInfo;
+					if (mi is FieldInfo)
+						((FieldInfo) mi).SetValue (msgObject, pair.Value);
+					else
+						((PropertyInfo) mi).SetValue (msgObject, pair.Value, null);
+				}
+
 			foreach (MessagePartDescription partDesc in md.Body.Parts)
 				if (partDesc.MemberInfo is FieldInfo)
 					((FieldInfo) partDesc.MemberInfo).SetValue (msgObject, parts [partDesc.Index]);
@@ -264,8 +306,16 @@ namespace System.ServiceModel.Dispatcher
 					((PropertyInfo) partDesc.MemberInfo).SetValue (msgObject, parts [partDesc.Index], null);
 		}
 
-		void MessageObjectToParts (MessageDescription md, object msgObject, object [] parts)
+		void MessageObjectToParts (MessageDescription md, object msgObject, Dictionary<MessageHeaderDescription,object> headers, object [] parts)
 		{
+			foreach (var headDesc in md.Headers) {
+				var mi = headDesc.MemberInfo;
+				if (mi is FieldInfo)
+					headers [headDesc] = ((FieldInfo) mi).GetValue (msgObject);
+				else
+					headers [headDesc] = ((PropertyInfo) mi).GetValue (msgObject, null);
+			}
+
 			foreach (MessagePartDescription partDesc in md.Body.Parts)
 				if (partDesc.MemberInfo is FieldInfo)
 					parts [partDesc.Index] = ((FieldInfo) partDesc.MemberInfo).GetValue (msgObject);
@@ -291,105 +341,19 @@ namespace System.ServiceModel.Dispatcher
 		}
 	}
 
-#if !NET_2_1
-	class XmlMessagesFormatter : BaseMessagesFormatter
-	{
-		XmlSerializerFormatAttribute attr;
-		Dictionary<MessageBodyDescription,XmlSerializer> bodySerializers
-			= new Dictionary<MessageBodyDescription,XmlSerializer> ();
-
-		public XmlMessagesFormatter (OperationDescription desc, XmlSerializerFormatAttribute attr)
-			: base (desc)
-		{
-			this.attr = attr;
-		}
-
-		public XmlMessagesFormatter (MessageDescriptionCollection messages, XmlSerializerFormatAttribute attr)
-			: base (messages)
-		{
-			this.attr = attr;
-		}
-
-		private XmlReflectionMember CreateReflectionMember (MessagePartDescription partDesc, bool isReturnValue)
-		{
-			XmlReflectionMember m = new XmlReflectionMember ();
-			m.IsReturnValue = isReturnValue;
-			m.MemberName = partDesc.Name;
-			m.MemberType = partDesc.Type;
-			return m;
-		}
-
-		protected override Message PartsToMessage (
-			MessageDescription md, MessageVersion version, string action, object [] parts)
-		{
-			return Message.CreateMessage (version, action, new XmlBodyWriter (GetSerializer (md.Body), parts));
-		}
-
-		protected override object [] MessageToParts (MessageDescription md, Message message)
-		{
-			if (message.IsEmpty)
-				return null;
-				
-			XmlDictionaryReader r = message.GetReaderAtBodyContents ();
-			return (object []) GetSerializer (md.Body).Deserialize (r);
-		}
-
-		// FIXME: Handle ServiceKnownTypes
-		XmlSerializer GetSerializer (MessageBodyDescription desc)
-		{
-			if (bodySerializers.ContainsKey (desc))
-				return bodySerializers [desc];
-
-			int count = desc.Parts.Count + (HasReturnValue (desc) ? 1 : 0);
-			XmlReflectionMember [] members = new XmlReflectionMember [count];
-
-			int ind = 0;
-			if (HasReturnValue (desc))
-				members [ind++] = CreateReflectionMember (desc.ReturnValue, true);
-
-			foreach (MessagePartDescription partDesc in desc.Parts)
-				members [ind++] = CreateReflectionMember (partDesc, false);
-
-			// FIXME: Register known types into xmlImporter.
-			XmlReflectionImporter xmlImporter = new XmlReflectionImporter ();
-			XmlMembersMapping [] partsMapping = new XmlMembersMapping [1];
-			partsMapping [0] = xmlImporter.ImportMembersMapping (desc.WrapperName, desc.WrapperNamespace, members, true);
-			bodySerializers [desc] = XmlSerializer.FromMappings (partsMapping) [0];
-			return bodySerializers [desc];
-		}
-
-		class XmlBodyWriter : BodyWriter
-		{
-			XmlSerializer serializer;
-			object body;
-
-			public XmlBodyWriter (XmlSerializer serializer, object parts)
-				: base (false)
-			{
-				this.serializer = serializer;
-				this.body = parts;
-			}
-
-			protected override BodyWriter OnCreateBufferedCopy (int maxBufferSize)
-			{
-				return new XmlBodyWriter (serializer, body);
-			}
-
-			protected override void OnWriteBodyContents (XmlDictionaryWriter writer)
-			{
-				serializer.Serialize (writer, body);
-			}
-		}
-	}
-#endif
-
 	class DataContractMessagesFormatter : BaseMessagesFormatter
 	{
 		DataContractFormatAttribute attr;
+#if !NET_2_1
+		DataContractSerializerOperationBehavior serializerBehavior;
+#endif
 
 		public DataContractMessagesFormatter (OperationDescription desc, DataContractFormatAttribute attr)
 			: base (desc)
 		{
+#if !NET_2_1
+			this.serializerBehavior = desc.Behaviors.Find<DataContractSerializerOperationBehavior>();
+#endif
 			this.attr = attr;
 		}
 
@@ -406,6 +370,21 @@ namespace System.ServiceModel.Dispatcher
 			MessageDescription md, MessageVersion version, string action, object [] parts)
 		{
 			return Message.CreateMessage (version, action, new DataContractBodyWriter (md.Body, this, parts));
+		}
+
+		protected override Dictionary<MessageHeaderDescription,object> MessageToHeaderObjects (MessageDescription md, Message message)
+		{
+			if (message.IsEmpty || md.Headers.Count == 0)
+				return null;
+			
+			var dic = new Dictionary<MessageHeaderDescription,object> ();
+			for (int i = 0; i < message.Headers.Count; i++) {
+				var r = message.Headers.GetReaderAtHeader (i);
+				var mh = md.Headers.FirstOrDefault (h => h.Name == r.LocalName && h.Namespace == r.NamespaceURI);
+				if (mh != null)
+					dic [mh] = ReadHeaderObject (mh.Type, GetSerializer (mh), r);
+			}
+			return dic;
 		}
 
 		protected override object [] MessageToParts (
@@ -440,13 +419,29 @@ namespace System.ServiceModel.Dispatcher
 			return parts;
 		}
 
-		// FIXME: Handle ServiceKnownTypes
 		XmlObjectSerializer GetSerializer (MessagePartDescription partDesc)
 		{
 			if (!serializers.ContainsKey (partDesc))
-				serializers [partDesc] = new DataContractSerializer (
-					partDesc.Type, partDesc.Name, partDesc.Namespace);
+#if !NET_2_1
+				if (serializerBehavior != null)
+					serializers [partDesc] = serializerBehavior.CreateSerializer(
+						partDesc.Type, partDesc.Name, partDesc.Namespace, OperationKnownTypes as IList<Type>);
+				else
+#endif
+					serializers [partDesc] = new DataContractSerializer (
+						partDesc.Type, partDesc.Name, partDesc.Namespace, OperationKnownTypes);
 			return serializers [partDesc];
+		}
+
+		object ReadHeaderObject (Type type, XmlObjectSerializer serializer, XmlDictionaryReader reader)
+		{
+			// FIXME: it's a nasty workaround just to avoid UniqueId output as a string.
+			// Seealso MessageHeader.DefaultMessageHeader.OnWriteHeaderContents().
+			// Note that msg.Headers.GetHeader<UniqueId> () simply fails (on .NET too) and it is useless. The API is lame by design.
+			if (type == typeof (UniqueId))
+				return new UniqueId (reader.ReadElementContentAsString ());
+			else
+				return serializer.ReadObject (reader);
 		}
 
 		class DataContractBodyWriter : BodyWriter

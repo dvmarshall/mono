@@ -609,27 +609,26 @@ namespace System.IO
 			throw new NotSupportedException (Locale.GetText ("File encryption isn't supported on any file system."));
 		}
 
-#if MOONLIGHT || NET_4_0
+#if MOONLIGHT || NET_4_0 || MOBILE
 		public static IEnumerable<string> ReadLines (string path)
 		{
-			using (StreamReader reader = File.OpenText (path)) {
-				return ReadLines (reader);
-			}
+			return ReadLines (File.OpenText (path));
 		}
 
 		public static IEnumerable<string> ReadLines (string path, Encoding encoding)
 		{
-			using (StreamReader reader = new StreamReader (path, encoding)) {
-				return ReadLines (reader);
-			}
+			return ReadLines (new StreamReader (path, encoding));
 		}
 
 		// refactored in order to avoid compiler-generated names for Moonlight tools
 		static IEnumerable<string> ReadLines (StreamReader reader)
 		{
-			string s;
-			while ((s = reader.ReadLine ()) != null)
-				yield return s;
+			using (reader) {
+				string s;
+				while ((s = reader.ReadLine ()) != null) {
+					yield return s;
+				}
+			}
 		}
 
 		public static void AppendAllLines (string path, IEnumerable<string> contents)

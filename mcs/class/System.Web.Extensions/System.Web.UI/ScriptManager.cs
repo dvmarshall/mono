@@ -1,10 +1,12 @@
 //
 // ScriptManager.cs
 //
-// Author:
+// Authors:
 //   Igor Zelmanovich <igorz@mainsoft.com>
+//   Marek Habersack <grendel@twistedcode.net>
 //
 // (C) 2007 Mainsoft, Inc.  http://www.mainsoft.com
+// (C) 2007-2010 Novell, Inc (http://novell.com/)
 //
 //
 // Permission is hereby granted, free of charge, to any person obtaining
@@ -62,7 +64,9 @@ namespace System.Web.UI
 		const string hiddenField = "hiddenField";
 		const string arrayDeclaration = "arrayDeclaration";
 		const string scriptBlock = "scriptBlock";
+#if NET_3_5
 		const string scriptStartupBlock = "scriptStartupBlock";
+#endif
 		const string expando = "expando";
 		const string onSubmit = "onSubmit";
 		const string asyncPostBackControlIDs = "asyncPostBackControlIDs";
@@ -395,9 +399,17 @@ namespace System.Web.UI
 		public static ScriptManager GetCurrent (Page page) {
 			if (page == null)
 				throw new ArgumentNullException ("page");
-			return (ScriptManager) page.Items [ScriptManagerKey];
+			return GetCurrentInternal (page);
 		}
 
+		static ScriptManager GetCurrentInternal (Page page)
+		{
+			if (page == null)
+				return null;
+
+			return (ScriptManager) page.Items [ScriptManagerKey];
+		}
+		
 		static void SetCurrent (Page page, ScriptManager instance) {
 			page.Items [ScriptManagerKey] = instance;
 			page.ClientScript.RegisterWebFormClientScript ();
@@ -443,10 +455,10 @@ namespace System.Web.UI
 				AsyncPostBackError (this, e);
 		}
 
-		protected override void OnInit (EventArgs e) {
+		protected internal override void OnInit (EventArgs e) {
 			base.OnInit (e);
 
-			if (GetCurrent (Page) != null)
+			if (GetCurrentInternal (Page) != null)
 				throw new InvalidOperationException ("Only one instance of a ScriptManager can be added to the page.");
 
 			SetCurrent (Page, this);
@@ -459,7 +471,7 @@ namespace System.Web.UI
 				OnAsyncPostBackError (new AsyncPostBackErrorEventArgs (Context.Error));
 		}
 
-		protected override void OnPreRender (EventArgs e) {
+		protected internal override void OnPreRender (EventArgs e) {
 			base.OnPreRender (e);
 
 			Page.PreRenderComplete += new EventHandler (OnPreRenderComplete);
@@ -754,8 +766,11 @@ namespace System.Web.UI
 
 		public static void RegisterArrayDeclaration (Control control, string arrayName, string arrayValue) {
 			Page page = control.Page;
-			ScriptManager sm = GetCurrent (page);
+			ScriptManager sm = GetCurrentInternal (page);
 
+			if (sm == null)
+				return;
+			
 			if (sm._arrayDeclarations == null)
 				sm._arrayDeclarations = new List<RegisteredArrayDeclaration> ();
 
@@ -784,8 +799,11 @@ namespace System.Web.UI
 
 		public static void RegisterClientScriptBlock (Control control, Type type, string key, string script, bool addScriptTags) {
 			Page page = control.Page;
-			ScriptManager sm = GetCurrent (page);
+			ScriptManager sm = GetCurrentInternal (page);
 
+			if (sm == null)
+				return;
+			
 			RegisterScript (ref sm._clientScriptBlocks, control, type, key, script, null, addScriptTags, RegisteredScriptType.ClientScriptBlock);
 
 			if (!sm.IsInAsyncPostBack)
@@ -798,8 +816,11 @@ namespace System.Web.UI
 
 		public static void RegisterClientScriptInclude (Control control, Type type, string key, string url) {
 			Page page = control.Page;
-			ScriptManager sm = GetCurrent (page);
+			ScriptManager sm = GetCurrentInternal (page);
 
+			if (sm == null)
+				return;
+			
 			RegisterScript (ref sm._clientScriptBlocks, control, type, key, null, url, false, RegisteredScriptType.ClientScriptInclude);
 
 			if (!sm.IsInAsyncPostBack)
@@ -901,8 +922,11 @@ namespace System.Web.UI
 
 		public static void RegisterExpandoAttribute (Control control, string controlId, string attributeName, string attributeValue, bool encode) {
 			Page page = control.Page;
-			ScriptManager sm = GetCurrent (page);
+			ScriptManager sm = GetCurrentInternal (page);
 
+			if (sm == null)
+				return;
+			
 			if (sm._expandoAttributes == null)
 				sm._expandoAttributes = new List<RegisteredExpandoAttribute> ();
 
@@ -918,8 +942,11 @@ namespace System.Web.UI
 
 		public static void RegisterHiddenField (Control control, string hiddenFieldName, string hiddenFieldInitialValue) {
 			Page page = control.Page;
-			ScriptManager sm = GetCurrent (page);
+			ScriptManager sm = GetCurrentInternal (page);
 
+			if (sm == null)
+				return;
+			
 			if (sm._hiddenFields == null)
 				sm._hiddenFields = new List<RegisteredHiddenField> ();
 
@@ -935,8 +962,11 @@ namespace System.Web.UI
 
 		public static void RegisterOnSubmitStatement (Control control, Type type, string key, string script) {
 			Page page = control.Page;
-			ScriptManager sm = GetCurrent (page);
+			ScriptManager sm = GetCurrentInternal (page);
 
+			if (sm == null)
+				return;
+			
 			RegisterScript (ref sm._onSubmitStatements, control, type, key, script, null, false, RegisteredScriptType.OnSubmitStatement);
 
 			if (!sm.IsInAsyncPostBack)
@@ -1014,8 +1044,11 @@ namespace System.Web.UI
 
 		public static void RegisterStartupScript (Control control, Type type, string key, string script, bool addScriptTags) {
 			Page page = control.Page;
-			ScriptManager sm = GetCurrent (page);
+			ScriptManager sm = GetCurrentInternal (page);
 
+			if (sm == null)
+				return;
+			
 			RegisterScript (ref sm._startupScriptBlocks, control, type, key, script, null, addScriptTags, RegisteredScriptType.ClientStartupScript);
 
 			if (!sm.IsInAsyncPostBack)
@@ -1053,7 +1086,7 @@ namespace System.Web.UI
 			scriptList.Add (new RegisteredScript (control, type, key, script, url, addScriptTag, scriptType));
 		}
 
-		protected override void Render (HtmlTextWriter writer) {
+		protected internal override void Render (HtmlTextWriter writer) {
 			// MSDN: This method is used by control developers to extend the ScriptManager control. 
 			// Notes to Inheritors: 
 			// When overriding this method, call the base Render(HtmlTextWriter) method 
@@ -1205,7 +1238,7 @@ namespace System.Web.UI
 
 		static void WriteCallbackOutput (TextWriter output, string type, string name, object value) {
 			string str = value as string;
-			StringBuilder sb = value as StringBuilder;
+			StringBuilder sb = str == null ? value as StringBuilder : null;
 			int length = 0;
 			if (str != null)
 				length = str.Length;
@@ -1268,28 +1301,12 @@ namespace System.Web.UI
 			//
 			if (_updatePanels != null && _updatePanels.Count > 0) {
 				bool needsUpdate;
-				
 				foreach (UpdatePanel panel in _updatePanels) {
 					if (panel.RequiresUpdate || (!String.IsNullOrEmpty (_panelToRefreshID) && String.Compare (_panelToRefreshID, panel.UniqueID, StringComparison.Ordinal) == 0))
 						needsUpdate = true;
 					else
 						needsUpdate = false;
-					
-					if (needsUpdate == false) {
-						Control parent = panel.Parent;
-						UpdatePanel parentPanel;
-						
-						bool havePanelsToRefresh = _panelsToRefresh != null ? _panelsToRefresh.Count > 0 : false;
-						while (parent != null) {
-							parentPanel = parent as UpdatePanel;
-							if (havePanelsToRefresh && parentPanel != null && _panelsToRefresh.Contains (parentPanel)) {
-								needsUpdate = true;
-								break;
-							}
-							parent = parent.Parent;
-						}
-					}
-					
+
 					panel.SetInPartialRendering (needsUpdate);
 					if (needsUpdate)
 						RegisterPanelForRefresh (panel);
@@ -1389,12 +1406,14 @@ namespace System.Web.UI
 							else
 								WriteCallbackOutput (output, scriptBlock, scriptContentWithTags, SerializeScriptBlock (scriptEntry));
 							break;
+#if NET_3_5
 						case RegisteredScriptType.ClientStartupScript:
 							if (scriptEntry.AddScriptTags)
 								WriteCallbackOutput (output, scriptStartupBlock, scriptContentNoTags, scriptEntry.Script);
 							else
 								WriteCallbackOutput (output, scriptStartupBlock, scriptContentWithTags, SerializeScriptBlock (scriptEntry));
 							break;
+#endif
 						case RegisteredScriptType.ClientScriptInclude:
 							WriteCallbackOutput (output, scriptBlock, scriptPath, scriptEntry.Url);
 							break;

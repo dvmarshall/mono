@@ -103,8 +103,11 @@ class ObjectPrinter:
             class_name = obj ['vtable'].dereference ()['klass'].dereference ()['name'].string ()
             if class_name [-2:len(class_name)] == "[]":
                 return {}.__iter__ ()
-            gdb_type = gdb.lookup_type ("struct %s_%s" % (class_ns.replace (".", "_"), class_name))
-            return self._iterator(obj.cast (gdb_type))
+            try:
+                gdb_type = gdb.lookup_type ("struct %s_%s" % (class_ns.replace (".", "_"), class_name))
+                return self._iterator(obj.cast (gdb_type))
+            except:
+                return {}.__iter__ ()
         except:
             print sys.exc_info ()[0]
             print sys.exc_info ()[1]
@@ -284,6 +287,8 @@ def lookup_pretty_printer(val):
     if t[0:5] == "class" and t[-1] == "&":
         return ObjectPrinter (val)    
     if t == "string":
+        return StringPrinter (val)
+    if t == "MonoString *":
         return StringPrinter (val)
     if t == "MonoMethod *":
         return MonoMethodPrinter (val)

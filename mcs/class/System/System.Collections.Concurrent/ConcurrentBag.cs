@@ -41,76 +41,67 @@ namespace System.Collections.Concurrent
 	[DebuggerTypeProxy (typeof (CollectionDebuggerView<>))]
 	public class ConcurrentBag<T> : IProducerConsumerCollection<T>, IEnumerable<T>, IEnumerable
 	{
-		const int multiplier = 2;
 		const int hintThreshold = 20;
 		
-		int size = Environment.ProcessorCount + 1;
 		int count;
 		
 		// We only use the add hints when number of slot is above hintThreshold
 		// so to not waste memory space and the CAS overhead
 		ConcurrentQueue<int> addHints = new ConcurrentQueue<int> ();
 		
-		CyclicDeque<T>[] container;
-		
-		object syncLock = new object ();
+		ConcurrentDictionary<int, CyclicDeque<T>> container = new ConcurrentDictionary<int, CyclicDeque<T>> ();
 		
 		public ConcurrentBag ()
 		{
-			container = new CyclicDeque<T>[size];
-			for (int i = 0; i < container.Length; i++)
-				container[i] = new CyclicDeque<T> ();
 		}
 		
-		public ConcurrentBag (IEnumerable<T> enumerable) : this ()
+		public ConcurrentBag (IEnumerable<T> collection) : this ()
 		{
-			foreach (T item in enumerable)
+			foreach (T item in collection)
 				Add (item);
-		}
-		
-		public bool TryAdd (T item)
-		{
-			Add (item);
-			
-			return true;
 		}
 		
 		public void Add (T item)
 		{
-			Interlocked.Increment (ref count);
-			GrowIfNecessary ();
-			
 			int index;
 			CyclicDeque<T> bag = GetBag (out index);
 			bag.PushBottom (item);
 			
 			// Cache operation ?
-			if (size > hintThreshold)
+			if (container.Count > hintThreshold)
 				addHints.Enqueue (index);
+
+			Interlocked.Increment (ref count);
+		}
+
+		bool IProducerConsumerCollection<T>.TryAdd (T element)
+		{
+			Add (element);
+			return true;
 		}
 		
-		public bool TryTake (out T item)
+		public bool TryTake (out T result)
 		{
-			item = default (T);
+			result = default (T);
 
 			if (count == 0)
 				return false;
 
 			int hintIndex;
 			CyclicDeque<T> bag = GetBag (out hintIndex);
-			bool hintEnabled = size > hintThreshold;
+			bool hintEnabled = container.Count > hintThreshold;
 			
-			if (bag == null || bag.PopBottom (out item) != PopResult.Succeed) {
-				for (int i = 0; i < container.Length; i++) {
+			if (bag == null || bag.PopBottom (out result) != PopResult.Succeed) {
+				foreach (var other in container) {
 					// Try to retrieve something based on a hint
-					bool result = hintEnabled && addHints.TryDequeue (out hintIndex) && container[hintIndex].PopTop (out item) == PopResult.Succeed;
+					bool ret = hintEnabled && addHints.TryDequeue (out hintIndex) && container[hintIndex].PopTop (out result) == PopResult.Succeed;
 
 					// We fall back to testing our slot
-					if (!result && container[i] != null)
-						result = container[i].PopTop (out item) == PopResult.Succeed;
+					if (!ret && other.Value != bag)
+						ret = other.Value.PopTop (out result) == PopResult.Succeed;
 					
 					// If we found something, stop
-					if (result) {
+					if (ret) {
 						Interlocked.Decrement (ref count);
 						return true;
 					}
@@ -121,6 +112,11 @@ namespace System.Collections.Concurrent
 			}
 			
 			return false;
+		}
+
+		public bool TryPeek (out T result)
+		{
+			throw new NotImplementedException ();
 		}
 		
 		public int Count {
@@ -152,19 +148,16 @@ namespace System.Collections.Concurrent
 			return GetEnumeratorInternal ();
 		}
 		
-		IEnumerator<T> IEnumerable<T>.GetEnumerator ()
+		public IEnumerator<T> GetEnumerator ()
 		{
 			return GetEnumeratorInternal ();
 		}
 		
 		IEnumerator<T> GetEnumeratorInternal ()
 		{
-			for (int i = 0; i < size; i++) {
-				CyclicDeque<T> bag = container[i];
-				foreach (T item in bag.GetEnumerable ()) {
+			foreach (var bag in container)
+				foreach (T item in bag.Value.GetEnumerable ())
 					yield return item;
-				}
-			}
 		}
 		
 		void System.Collections.ICollection.CopyTo (Array array, int index)
@@ -209,40 +202,17 @@ namespace System.Collections.Concurrent
 			
 		int GetIndex ()
 		{
-			return Thread.CurrentThread.ManagedThreadId - 1;
+			return Thread.CurrentThread.ManagedThreadId;
 		}
-		
-		void GrowIfNecessary ()
-		{
-			int index = GetIndex ();
-			int currentSize = size;
-			
-			while (index > currentSize - 1) {
-				currentSize = size;
-				Grow (currentSize);
-			}
-		}
-		
-		CyclicDeque<T> GetBag (out int i)
-		{			
-			i = GetIndex ();
-			
-			return i < container.Length ? (container[i] == null) ? (container[i] = new CyclicDeque<T> ()) : container[i] : null;
-		}
-		
-		void Grow (int referenceSize)
-		{
-			lock (syncLock) {
-				if (referenceSize != size)
-					return;
 				
-				CyclicDeque<T>[] slice = new CyclicDeque<T>[size * multiplier];
-				int i = 0;
-				Array.Copy (container, slice, container.Length);
-				
-				container = slice;
-				size = slice.Length;
-			}
+		CyclicDeque<T> GetBag (out int index)
+		{
+			index = GetIndex ();
+			CyclicDeque<T> value;
+			if (container.TryGetValue (index, out value))
+				return value;
+
+			return container.GetOrAdd (index, new CyclicDeque<T> ());
 		}
 	}
 }

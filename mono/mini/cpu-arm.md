@@ -46,7 +46,7 @@
 #
 # See the code in mini-x86.c for more details on how the specifiers are used.
 #
-memory_barrier: len:4
+memory_barrier: len:8 clob:a
 nop: len:4
 relaxed_nop: len:4
 break: len:4
@@ -202,7 +202,7 @@ sbb_imm: dest:i src1:i len:12
 br_reg: src1:i len:8
 bigmul: len:8 dest:l src1:i src2:i
 bigmul_un: len:8 dest:l src1:i src2:i
-tls_get: len:8 dest:i
+tls_get: len:8 dest:i clob:c
 
 # 32 bit opcodes
 int_add: dest:i src1:i src2:i len:4

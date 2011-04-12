@@ -40,7 +40,7 @@ static int workers_num_working;
 
 static GrayQueue workers_distribute_gray_queue;
 
-#define WORKERS_DISTRIBUTE_GRAY_QUEUE (major.is_parallel ? &workers_distribute_gray_queue : &gray_queue)
+#define WORKERS_DISTRIBUTE_GRAY_QUEUE (major_collector.is_parallel ? &workers_distribute_gray_queue : &gray_queue)
 
 /*
  * Must be a power of 2.  It seems that larger values don't help much.
@@ -148,7 +148,7 @@ workers_change_num_working (int delta)
 {
 	int old, new;
 
-	if (!major.is_parallel)
+	if (!major_collector.is_parallel)
 		return -1;
 
 	do {
@@ -201,12 +201,15 @@ workers_thread_func (void *data_untyped)
 
 		//g_print ("worker done\n");
 	}
+
+	/* dummy return to make compilers happy */
+	return NULL;
 }
 
 static void
 workers_distribute_gray_queue_sections (void)
 {
-	if (!major.is_parallel)
+	if (!major_collector.is_parallel)
 		return;
 
 	workers_gray_queue_share_redirect (&workers_distribute_gray_queue);
@@ -217,7 +220,7 @@ workers_init (int num_workers)
 {
 	int i;
 
-	if (!major.is_parallel)
+	if (!major_collector.is_parallel)
 		return;
 
 	//g_print ("initing %d workers\n", num_workers);
@@ -271,7 +274,7 @@ workers_start_all_workers (int num_additional_workers)
 {
 	int i;
 
-	if (!major.is_parallel)
+	if (!major_collector.is_parallel)
 		return;
 
 	g_assert (workers_num_working == 0);
@@ -286,7 +289,7 @@ workers_join (void)
 {
 	int i;
 
-	if (!major.is_parallel)
+	if (!major_collector.is_parallel)
 		return;
 
 	//g_print ("joining\n");
@@ -310,7 +313,10 @@ mono_sgen_is_worker_thread (pthread_t thread)
 {
 	int i;
 
-	if (!major.is_parallel)
+	if (major_collector.is_worker_thread && major_collector.is_worker_thread (thread))
+		return TRUE;
+
+	if (!major_collector.is_parallel)
 		return FALSE;
 
 	for (i = 0; i < workers_num; ++i) {

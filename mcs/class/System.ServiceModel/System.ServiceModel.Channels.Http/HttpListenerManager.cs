@@ -50,7 +50,7 @@ namespace System.ServiceModel.Channels.Http
 
 		public List<HttpChannelListenerEntry> Entries { get; private set; }
 
-		public abstract void RegisterListener (ChannelDispatcher channel, TimeSpan timeout);
+		public abstract void RegisterListener (ChannelDispatcher channel, HttpTransportBindingElement element, TimeSpan timeout);
 		public abstract void UnregisterListener (ChannelDispatcher channel, TimeSpan timeout);
 
 		protected void RegisterListenerCommon (ChannelDispatcher channel, TimeSpan timeout)
@@ -90,7 +90,9 @@ namespace System.ServiceModel.Channels.Http
 			DateTime start = DateTime.Now;
 
 			context = null;
-			var ce = Entries.First (e => e.ChannelDispatcher == channel);
+			var ce = Entries.FirstOrDefault (e => e.ChannelDispatcher == channel);
+			if (ce == null)
+				return false;
 			lock (ce.RetrieverLock) {
 				var q = ce.ContextQueue;
 				if (q.Count == 0) {
@@ -123,16 +125,25 @@ namespace System.ServiceModel.Channels.Http
 		Thread loop;
 
 		// FIXME: use timeout
-		public override void RegisterListener (ChannelDispatcher channel, TimeSpan timeout)
+		public override void RegisterListener (ChannelDispatcher channel, HttpTransportBindingElement element, TimeSpan timeout)
 		{
 			RegisterListenerCommon (channel, timeout);
 
 			if (Entries.Count != 1)
 				return;
 
+			if (element != null) {
+				var l = listener;
+				l.AuthenticationSchemeSelectorDelegate = delegate (HttpListenerRequest req) {
+					return element.AuthenticationScheme;
+				};
+				l.Realm = element.Realm;
+				l.UnsafeConnectionNtlmAuthentication = element.UnsafeConnectionNtlmAuthentication;
+			}
+
 			// Start here. It is shared between channel listeners
 			// that share the same listen Uri. So there is no other appropriate place.
-#if true
+#if USE_SEPARATE_LOOP // this cannot be enabled because it causes infinite loop when ChannelDispatcher is not involved.
 			loop = new Thread (new ThreadStart (delegate {
 				listener.Start ();
 				try {
@@ -145,6 +156,7 @@ namespace System.ServiceModel.Channels.Http
 			}));
 			loop.Start ();
 #else
+			listener.Start ();
 			listener.BeginGetContext (GetContextCompleted, null);
 #endif
 		}
@@ -158,7 +170,7 @@ namespace System.ServiceModel.Channels.Http
 			if (Entries.Count > 0)
 				return;
 
-#if true
+#if USE_SEPARATE_LOOP
 			loop.Abort ();
 #else
 			this.listener.Stop ();
@@ -187,7 +199,7 @@ namespace System.ServiceModel.Channels.Http
 		{
 		}
 
-		public override void RegisterListener (ChannelDispatcher channel, TimeSpan timeout)
+		public override void RegisterListener (ChannelDispatcher channel, HttpTransportBindingElement element, TimeSpan timeout)
 		{
 			RegisterListenerCommon (channel, timeout);
 		}

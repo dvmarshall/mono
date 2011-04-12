@@ -231,6 +231,8 @@ struct _MonoDomain {
 	MonoObject         *typeof_void;
 	/* Ephemeron Tombstone*/
 	MonoObject         *ephemeron_tombstone;
+	/* new MonoType [0] */
+	MonoArray          *empty_types;
 	/* 
 	 * The fields between FIRST_GC_TRACKED and LAST_GC_TRACKED are roots, but
 	 * not object references.
@@ -280,12 +282,13 @@ struct _MonoDomain {
 	 * if the hashtable contains a GC visible reference to them.
 	 */
 	GHashTable         *finalizable_objects_hash;
-#ifndef HAVE_SGEN_GC
+
+	/* These two are boehm only */
 	/* Maps MonoObjects to a GSList of WeakTrackResurrection GCHandles pointing to them */
 	GHashTable         *track_resurrection_objects_hash;
 	/* Maps WeakTrackResurrection GCHandles to the MonoObjects they point to */
 	GHashTable         *track_resurrection_handles_hash;
-#endif
+
 	/* Protects the three hashes above */
 	CRITICAL_SECTION   finalizable_objects_hash_lock;
 	/* Used when accessing 'domain_assemblies' */
@@ -295,6 +298,8 @@ struct _MonoDomain {
 
 	GHashTable	   *generic_virtual_cases;
 	MonoThunkFreeList **thunk_free_lists;
+
+	GHashTable     *generic_virtual_thunks;
 
 	/* Information maintained by the JIT engine */
 	gpointer runtime_info;
@@ -315,6 +320,20 @@ struct _MonoDomain {
 	/* Assembly bindings, the per-domain part */
 	GSList *assembly_bindings;
 	gboolean assembly_bindings_parsed;
+
+	/* Used by socket-io.c */
+	/* These are domain specific, since the assembly can be unloaded */
+	MonoImage *socket_assembly;
+	MonoClass *sockaddr_class;
+	MonoClassField *sockaddr_data_field;
+
+	/* Used by threadpool.c */
+	MonoImage *system_image;
+	MonoImage *system_net_dll;
+	MonoClass *corlib_asyncresult_class;
+	MonoClass *socket_class;
+	MonoClass *ad_unloaded_ex_class;
+	MonoClass *process_class;
 };
 
 typedef struct  {
@@ -403,6 +422,12 @@ mono_domain_code_reserve_align (MonoDomain *domain, int size, int alignment) MON
 
 void
 mono_domain_code_commit (MonoDomain *domain, void *data, int size, int newsize) MONO_INTERNAL;
+
+void *
+nacl_domain_get_code_dest (MonoDomain *domain, void *data) MONO_INTERNAL;
+
+void 
+nacl_domain_code_validate (MonoDomain *domain, guint8 **buf_base, int buf_size, guint8 **code_end) MONO_INTERNAL;
 
 void
 mono_domain_code_foreach (MonoDomain *domain, MonoCodeManagerFunc func, void *user_data) MONO_INTERNAL;
@@ -548,5 +573,7 @@ void mono_set_private_bin_path_from_config (MonoDomain *domain) MONO_INTERNAL;
 int mono_framework_version (void) MONO_INTERNAL;
 
 void mono_reflection_cleanup_domain (MonoDomain *domain) MONO_INTERNAL;
+
+void mono_assembly_cleanup_domain_bindings (guint32 domain_id) MONO_INTERNAL;;
 
 #endif /* __MONO_METADATA_DOMAIN_INTERNALS_H__ */

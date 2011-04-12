@@ -21,6 +21,14 @@ namespace System.ServiceModel.Discovery
 			if (endpoint.Address != null)
 				ret.ListenUris.Add (endpoint.Address.Uri);
 
+			var edb = endpoint.Behaviors.Find<EndpointDiscoveryBehavior> ();
+			if (edb != null) {
+				foreach (var ctn in edb.ContractTypeNames)
+					ret.ContractTypeNames.Add (ctn);
+				foreach (var ext in edb.Extensions)
+					ret.Extensions.Add (ext);
+			}
+
 			return ret;
 		}
 
@@ -31,6 +39,7 @@ namespace System.ServiceModel.Discovery
 		
 		public EndpointDiscoveryMetadata ()
 		{
+			Address = new EndpointAddress (EndpointAddress.AnonymousUri);
 			ContractTypeNames = new Collection<XmlQualifiedName> ();
 			ListenUris = new Collection<Uri> ();
 			Scopes = new Collection<Uri> ();
@@ -52,17 +61,21 @@ namespace System.ServiceModel.Discovery
 			var ret = new EndpointDiscoveryMetadata ();
 
 			reader.MoveToContent ();
-			if (!reader.IsStartElement ("ProbeMatchType", version.Namespace) || reader.IsEmptyElement)
-				throw new XmlException ("Non-empty ProbeMatchType element is expected");
-			reader.ReadStartElement ("ProbeType", version.Namespace);
+
+			reader.ReadStartElement ();
+			reader.MoveToContent ();
 
 			// standard members
 			reader.MoveToContent ();
-			ret.Address = EndpointAddress.ReadFrom (AddressingVersion.WSAddressing10, reader);
+
+			// it is possible due to InternalVisibleToAttribute...
+			string addrNS = version.MessageVersion.Addressing.Namespace;
+
+			ret.Address = EndpointAddress.ReadFrom (version.MessageVersion.Addressing, reader, "EndpointReference", addrNS);
 
 			reader.MoveToContent ();
-			bool isEmpty = reader.IsEmptyElement;
-			ret.ContractTypeNames = new Collection<XmlQualifiedName> ((XmlQualifiedName []) reader.ReadElementContentAs (typeof (XmlQualifiedName []), null, "Types", version.Namespace));
+			if (reader.IsStartElement ("Types", version.Namespace))
+				ret.ContractTypeNames = new Collection<XmlQualifiedName> ((XmlQualifiedName []) reader.ReadElementContentAs (typeof (XmlQualifiedName []), null, "Types", version.Namespace));
 
 			reader.MoveToContent ();
 			if (reader.IsStartElement ("Scopes", version.Namespace))
@@ -89,7 +102,8 @@ namespace System.ServiceModel.Discovery
 				throw new ArgumentNullException ("writer");
 
 			// standard members
-			Address.WriteTo (AddressingVersion.WSAddressing10, writer);
+			if (Address != null)
+				Address.WriteTo (version.MessageVersion.Addressing, writer);
 
 			writer.WriteStartElement ("d", "Types", version.Namespace);
 			int p = 0;

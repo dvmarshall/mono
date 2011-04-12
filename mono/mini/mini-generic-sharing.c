@@ -236,12 +236,6 @@ register_generic_subclass (MonoClass *class)
 	MonoClass *parent = class->parent;
 	MonoClass *subclass;
 	MonoRuntimeGenericContextTemplate *rgctx_template = class_lookup_rgctx_template (class);
-	static gboolean hook_installed;
-
-	if (!hook_installed) {
-		mono_install_image_unload_hook (mono_class_unregister_image_generic_subclasses, NULL);
-		hook_installed = TRUE;
-	}
 
 	g_assert (rgctx_template);
 
@@ -364,6 +358,17 @@ alloc_oti (MonoImage *image)
 }
 
 #define MONO_RGCTX_SLOT_USED_MARKER	((gpointer)&mono_defaults.object_class->byval_arg)
+
+/*
+ * Return true if this info type has the notion of identify.
+ *
+ * Some info types expect that each insert results in a new slot been assigned.
+ */
+static int
+other_info_has_identity (int info_type)
+{
+	return info_type != MONO_RGCTX_INFO_CAST_CACHE;
+}
 
 /*
  * LOCKING: loader lock
@@ -500,7 +505,8 @@ inflate_other_data (gpointer data, int info_type, MonoGenericContext *context, M
 	case MONO_RGCTX_INFO_KLASS:
 	case MONO_RGCTX_INFO_VTABLE:
 	case MONO_RGCTX_INFO_TYPE:
-	case MONO_RGCTX_INFO_REFLECTION_TYPE: {
+	case MONO_RGCTX_INFO_REFLECTION_TYPE:
+	case MONO_RGCTX_INFO_CAST_CACHE: {
 		gpointer result = mono_class_inflate_generic_type_with_mempool (temporary ? NULL : class->image,
 			data, context, &error);
 		g_assert (mono_error_ok (&error)); /*FIXME proper error handling*/
@@ -577,6 +583,7 @@ free_inflated_info (int info_type, gpointer info)
 	case MONO_RGCTX_INFO_VTABLE:
 	case MONO_RGCTX_INFO_TYPE:
 	case MONO_RGCTX_INFO_REFLECTION_TYPE:
+	case MONO_RGCTX_INFO_CAST_CACHE:
 		mono_metadata_free_type (info);
 		break;
 	default:
@@ -599,17 +606,8 @@ static gboolean
 generic_inst_is_sharable (MonoGenericInst *inst, gboolean allow_type_vars,
 						  gboolean allow_partial)
 {
-	gboolean has_refs;
 	int i;
 
-	has_refs = FALSE;
-	for (i = 0; i < inst->type_argc; ++i) {
-		MonoType *type = inst->type_argv [i];
-
-		if (MONO_TYPE_IS_REFERENCE (type) || (allow_type_vars && (type->type == MONO_TYPE_VAR || type->type == MONO_TYPE_MVAR)))
-			has_refs = TRUE;
-	}
- 
 	for (i = 0; i < inst->type_argc; ++i) {
 		MonoType *type = inst->type_argv [i];
 
@@ -850,6 +848,12 @@ class_type_info (MonoDomain *domain, MonoClass *class, int info_type)
 			mono_raise_exception (mono_class_get_exception_for_failure (class));
 		return vtable;
 	}
+	case MONO_RGCTX_INFO_CAST_CACHE: {
+		/*First slot is the cache itself, the second the vtable.*/
+		gpointer **cache_data = mono_domain_alloc0 (domain, sizeof (gpointer) * 2);
+		cache_data [1] = (gpointer)class;
+		return cache_data;
+	}
 	default:
 		g_assert_not_reached ();
 	}
@@ -871,6 +875,7 @@ instantiate_other_info (MonoDomain *domain, MonoRuntimeGenericContextOtherInfoTe
 	case MONO_RGCTX_INFO_STATIC_DATA:
 	case MONO_RGCTX_INFO_KLASS:
 	case MONO_RGCTX_INFO_VTABLE:
+	case MONO_RGCTX_INFO_CAST_CACHE:
 		temporary = TRUE;
 		break;
 	default:
@@ -882,7 +887,8 @@ instantiate_other_info (MonoDomain *domain, MonoRuntimeGenericContextOtherInfoTe
 	switch (oti->info_type) {
 	case MONO_RGCTX_INFO_STATIC_DATA:
 	case MONO_RGCTX_INFO_KLASS:
-	case MONO_RGCTX_INFO_VTABLE: {
+	case MONO_RGCTX_INFO_VTABLE:
+	case MONO_RGCTX_INFO_CAST_CACHE: {
 		MonoClass *arg_class = mono_class_from_mono_type (data);
 
 		free_inflated_info (oti->info_type, data);
@@ -1029,6 +1035,7 @@ other_info_equal (gpointer data1, gpointer data2, int info_type)
 	case MONO_RGCTX_INFO_VTABLE:
 	case MONO_RGCTX_INFO_TYPE:
 	case MONO_RGCTX_INFO_REFLECTION_TYPE:
+	case MONO_RGCTX_INFO_CAST_CACHE:
 		return mono_class_from_mono_type (data1) == mono_class_from_mono_type (data2);
 	case MONO_RGCTX_INFO_METHOD:
 	case MONO_RGCTX_INFO_GENERIC_METHOD_CODE:
@@ -1059,22 +1066,24 @@ lookup_or_register_other_info (MonoClass *class, int type_argc, gpointer data, i
 
 	mono_loader_lock ();
 
-	oti_list = get_other_info_templates (rgctx_template, type_argc);
+	if (other_info_has_identity (info_type)) {
+		oti_list = get_other_info_templates (rgctx_template, type_argc);
 
-	for (oti = oti_list, i = 0; oti; oti = oti->next, ++i) {
-		gpointer inflated_data;
+		for (oti = oti_list, i = 0; oti; oti = oti->next, ++i) {
+			gpointer inflated_data;
 
-		if (oti->info_type != info_type || !oti->data)
-			continue;
+			if (oti->info_type != info_type || !oti->data)
+				continue;
 
-		inflated_data = inflate_other_info (oti, generic_context, class, TRUE);
+			inflated_data = inflate_other_info (oti, generic_context, class, TRUE);
 
-		if (other_info_equal (data, inflated_data, info_type)) {
+			if (other_info_equal (data, inflated_data, info_type)) {
+				free_inflated_info (info_type, inflated_data);
+				mono_loader_unlock ();
+				return i;
+			}
 			free_inflated_info (info_type, inflated_data);
-			mono_loader_unlock ();
-			return i;
 		}
-		free_inflated_info (info_type, inflated_data);
 	}
 
 	/* We haven't found the info */
@@ -1858,4 +1867,14 @@ mini_type_stack_size_full (MonoGenericSharingContext *gsctx, MonoType *t, guint3
 void
 mono_generic_sharing_init (void)
 {
+	mono_install_image_unload_hook (mono_class_unregister_image_generic_subclasses, NULL);
+}
+
+void
+mono_generic_sharing_cleanup (void)
+{
+	mono_remove_image_unload_hook (mono_class_unregister_image_generic_subclasses, NULL);
+
+	if (generic_subclass_hash)
+		g_hash_table_destroy (generic_subclass_hash);
 }

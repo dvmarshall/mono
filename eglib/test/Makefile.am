@@ -2,7 +2,7 @@ SOURCES = test.c test.h tests.h driver.c hashtable.c string-util.c string.c slis
 
 test_eglib_SOURCES = $(SOURCES)
 
-test_eglib_CFLAGS = -Wall -Werror -D_FORTIFY_SOURCE=2 -I$(srcdir)/../src -I../src -DDRIVER_NAME=\"EGlib\"
+test_eglib_CFLAGS = -Wall -D_FORTIFY_SOURCE=2 -I$(srcdir)/../src -I../src -DDRIVER_NAME=\"EGlib\"
 test_eglib_LDADD = ../src/libeglib.la
 
 run-eglib: all

@@ -27,12 +27,14 @@ man_MANS = \
 	mdvalidater.1         \
 	mkbundle.1            \
 	mono.1                \
+	mprof-report.1        \
 	mono-cil-strip.1      \
 	mono-config.5         \
 	monodocer.1           \
 	monodocs2html.1       \
 	monolinker.1          \
 	monop.1               \
+	mono-api-info.1       \
 	mono-service.1        \
 	mono-shlib-cop.1      \
 	mono-xmltool.1        \
@@ -51,6 +53,7 @@ man_MANS = \
 	wsdl.1                \
 	xbuild.1	      \
 	xsd.1		      \
-	mono-configuration-crypto.1
+	mono-configuration-crypto.1 \
+	ccrewrite.1
 
 EXTRA_DIST = $(man_MANS)

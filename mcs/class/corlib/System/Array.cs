@@ -45,7 +45,7 @@ namespace System
 	[ComVisible (true)]
 	// FIXME: We are doing way to many double/triple exception checks for the overloaded functions"
 	public abstract class Array : ICloneable, ICollection, IList, IEnumerable
-#if NET_4_0 || MOONLIGHT
+#if NET_4_0 || MOONLIGHT || MOBILE
 		, IStructuralComparable, IStructuralEquatable
 #endif
 	{
@@ -434,7 +434,7 @@ namespace System
 			return new SimpleEnumerator (this);
 		}
 
-#if NET_4_0 || MOONLIGHT
+#if NET_4_0 || MOONLIGHT || MOBILE
 		int IStructuralComparable.CompareTo (object other, IComparer comparer)
 		{
 			if (other == null)
@@ -1316,7 +1316,7 @@ namespace System
 				throw new ArgumentOutOfRangeException ("length", Locale.GetText (
 					"Value has to be >= 0."));
 
-			if (keys.Length != items.Length || keys.Length - (index + keys.GetLowerBound (0)) < length)
+			if (items.Length - (index + items.GetLowerBound (0)) < length || keys.Length - (index + keys.GetLowerBound (0)) < length)
 				throw new ArgumentException ();
 
 			SortImpl (keys, items, index, length, comparer);
@@ -1565,7 +1565,7 @@ namespace System
 			if (length < 0)
 				throw new ArgumentOutOfRangeException ("length");
 
-			if (keys.Length != items.Length || keys.Length - index < length)
+			if (items.Length - index < length || keys.Length - index < length)
 				throw new ArgumentException ();
 
 			SortImpl<TKey, TValue> (keys, items, index, length, comparer);
@@ -1920,11 +1920,6 @@ namespace System
 		[ReliabilityContractAttribute (Consistency.WillNotCorruptState, Cer.MayFail)]
 		public static void Resize<T> (ref T [] array, int newSize)
 		{
-			Resize<T> (ref array, array == null ? 0 : array.Length, newSize);
-		}
-
-		internal static void Resize<T> (ref T[] array, int length, int newSize)
-		{
 			if (newSize < 0)
 				throw new ArgumentOutOfRangeException ();
 			
@@ -1932,12 +1927,14 @@ namespace System
 				array = new T [newSize];
 				return;
 			}
-			
-			if (array.Length == newSize)
+
+			int length = array.Length;
+			if (length == newSize)
 				return;
 			
 			T [] a = new T [newSize];
-			Array.Copy (array, a, Math.Min (newSize, length));
+			if (length != 0)
+				FastCopy (array, 0, a, 0, Math.Min (newSize, length));
 			array = a;
 		}
 		

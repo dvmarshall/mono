@@ -29,19 +29,42 @@ using System.ServiceModel;
 using System.ServiceModel.Channels;
 using System.ServiceModel.Description;
 using System.ServiceModel.Dispatcher;
+using System.ServiceModel.Discovery.Udp;
 
 namespace System.ServiceModel.Discovery
 {
 	public abstract class DiscoveryEndpointProvider
 	{
+		internal static DiscoveryEndpointProvider CreateDefault ()
+		{
+			return new UdpDiscoveryEndpointProvider ();
+		}
+
 		public abstract DiscoveryEndpoint GetDiscoveryEndpoint ();
+	}
+
+	internal class SimpleDiscoveryEndpointProvider : DiscoveryEndpointProvider
+	{
+		public SimpleDiscoveryEndpointProvider (DiscoveryEndpoint value)
+		{
+			this.value = value;
+		}
+		
+		DiscoveryEndpoint value;
+		
+		public override DiscoveryEndpoint GetDiscoveryEndpoint ()
+		{
+			return value;
+		}
 	}
 
 	internal class UdpDiscoveryEndpointProvider : DiscoveryEndpointProvider
 	{
 		public override DiscoveryEndpoint GetDiscoveryEndpoint ()
 		{
-			throw new NotImplementedException ();
+			var binding = new CustomBinding (new TextMessageEncodingBindingElement (), new UdpTransportBindingElement ());
+			// FIXME: Name might not be set here (but needs to be modified somewhere anyways).
+			return new UdpDiscoveryEndpoint () { Binding = binding };
 		}
 	}
 }

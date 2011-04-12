@@ -126,7 +126,7 @@ namespace System.ServiceModel
 			get { return description; }
 		}
 
-		protected IDictionary<string,ContractDescription> ImplementedContracts {
+		protected internal IDictionary<string,ContractDescription> ImplementedContracts {
 			get { return contracts; }
 		}
 
@@ -202,6 +202,29 @@ namespace System.ServiceModel
 				throw new InvalidOperationException (String.Format ("Contract '{0}' was not found in the implemented contracts in this service host.", implementedContract));
 			return AddServiceEndpointCore (cd, binding, ea, listenUri);
 		}
+
+#if NET_4_0
+		public virtual void AddServiceEndpoint (ServiceEndpoint endpoint)
+		{
+			if (endpoint == null)
+				throw new ArgumentNullException ("endpoint");
+
+			ThrowIfDisposedOrImmutable ();
+
+			if (endpoint.Address == null)
+				throw new ArgumentException ("Address on the argument endpoint is null");
+			if (endpoint.Contract == null)
+				throw new ArgumentException ("Contract on the argument endpoint is null");
+			if (endpoint.Binding == null)
+				throw new ArgumentException ("Binding on the argument endpoint is null");
+
+			if (!ImplementedContracts.Values.Any (cd => cd.ContractType == endpoint.Contract.ContractType) &&
+			    endpoint.Binding.Namespace != "http://schemas.microsoft.com/ws/2005/02/mex/bindings") // special case
+				throw new InvalidOperationException (String.Format ("Contract '{0}' is not implemented in this service '{1}'", endpoint.Contract.Name, Description.Name));
+
+			Description.Endpoints.Add (endpoint);
+		}
+#endif
 
 		Type PopulateType (string typeName)
 		{
@@ -297,40 +320,13 @@ namespace System.ServiceModel
 				throw new InvalidOperationException ("ApplyConfiguration requires that the Description property be initialized. Either provide a valid ServiceDescription in the CreateDescription method or override the ApplyConfiguration method to provide an alternative implementation");
 
 			ServiceElement service = GetServiceElement ();
-			if (service != null) {
-				
-				//base addresses
-				HostElement host = service.Host;
-				foreach (BaseAddressElement baseAddress in host.BaseAddresses) {
-					AddBaseAddress (new Uri (baseAddress.BaseAddress));
-				}
-
-				// behaviors
-				ServiceBehaviorElement behavior = ConfigUtil.BehaviorsSection.ServiceBehaviors [service.BehaviorConfiguration];
-				if (behavior != null) {
-					foreach (var bxe in behavior) {
-						IServiceBehavior b = (IServiceBehavior) bxe.CreateBehavior ();
-						Description.Behaviors.Add (b);
-					}
-				}
-				else
-					throw new ArgumentException (String.Format ("Service behavior {0} is specified, but was not found", service.BehaviorConfiguration));
-
-				// services
-				foreach (ServiceEndpointElement endpoint in service.Endpoints) {
-					ServiceEndpoint se = AddServiceEndpoint (
-						endpoint.Contract,
-						ConfigUtil.CreateBinding (endpoint.Binding, endpoint.BindingConfiguration),
-						endpoint.Address);
-					// endpoint behaviors
-					EndpointBehaviorElement epbehavior = ConfigUtil.BehaviorsSection.EndpointBehaviors [endpoint.BehaviorConfiguration];
-					if (epbehavior != null)
-						foreach (var bxe in epbehavior) {
-							IEndpointBehavior b = (IEndpointBehavior) bxe.CreateBehavior ();
-							se.Behaviors.Add (b);
-					}
-				}
-			}
+			
+			if (service != null)
+				LoadConfigurationSection (service);
+#if NET_4_0
+			// simplified configuration
+			AddServiceBehaviors (String.Empty, false);
+#endif
 			// TODO: consider commonBehaviors here
 
 			// ensure ServiceAuthorizationBehavior
@@ -345,6 +341,81 @@ namespace System.ServiceModel
 			if (debugBehavior == null) {
 				debugBehavior = new ServiceDebugBehavior ();
 				Description.Behaviors.Add (debugBehavior);
+			}
+		}
+
+		void AddServiceBehaviors (string configurationName, bool throwIfNotFound)
+		{
+#if NET_4_0
+			if (configurationName == null)
+				return;
+#else
+			if (String.IsNullOrEmpty (configurationName))
+				return;
+#endif
+			ServiceBehaviorElement behavior = ConfigUtil.BehaviorsSection.ServiceBehaviors [configurationName];
+			if (behavior == null) {
+				if (throwIfNotFound)
+					throw new ArgumentException (String.Format ("Service behavior configuration '{0}' was not found", configurationName));
+				return;
+			}
+
+			KeyedByTypeCollection<IServiceBehavior> behaviors = Description.Behaviors;
+			foreach (var bxe in behavior) {
+				IServiceBehavior b = (IServiceBehavior) bxe.CreateBehavior ();
+				if (behaviors.Contains (b.GetType ()))
+					continue;
+				behaviors.Add (b);
+			}
+		}
+		
+		void ApplyServiceElement (ServiceElement service)
+		{
+			//base addresses
+			HostElement host = service.Host;
+			foreach (BaseAddressElement baseAddress in host.BaseAddresses) {
+				AddBaseAddress (new Uri (baseAddress.BaseAddress));
+			}
+
+			// behaviors
+			AddServiceBehaviors (service.BehaviorConfiguration, true);
+
+			// endpoints
+			foreach (ServiceEndpointElement endpoint in service.Endpoints) {
+				ServiceEndpoint se;
+
+#if NET_4_0
+				var binding = String.IsNullOrEmpty (endpoint.Binding) ? null : ConfigUtil.CreateBinding (endpoint.Binding, endpoint.BindingConfiguration);
+
+				if (!String.IsNullOrEmpty (endpoint.Kind)) {
+					var contract = String.IsNullOrEmpty (endpoint.Contract) ? null : GetContract (endpoint.Contract, false);
+					se = ConfigUtil.ConfigureStandardEndpoint (contract, endpoint);
+					if (se.Binding == null)
+						se.Binding = binding;
+					if (se.Address == null && se.Binding != null) // standard endpoint might have empty address
+						se.Address = new EndpointAddress (CreateUri (se.Binding.Scheme, endpoint.Address));
+					if (se.Binding == null && se.Address != null) // look for protocol mapping
+						se.Binding = ConfigUtil.GetBindingByProtocolMapping (se.Address.Uri);
+
+					AddServiceEndpoint (se);
+				}
+				else {
+					if (binding == null && endpoint.Address != null) // look for protocol mapping
+						binding = ConfigUtil.GetBindingByProtocolMapping (endpoint.Address);
+					se = AddServiceEndpoint (endpoint.Contract, binding, endpoint.Address);
+				}
+#else
+				var binding = ConfigUtil.CreateBinding (endpoint.Binding, endpoint.BindingConfiguration);
+				se = AddServiceEndpoint (endpoint.Contract, binding, endpoint.Address);
+#endif
+
+				// endpoint behaviors
+				EndpointBehaviorElement epbehavior = ConfigUtil.BehaviorsSection.EndpointBehaviors [endpoint.BehaviorConfiguration];
+				if (epbehavior != null)
+					foreach (var bxe in epbehavior) {
+						IEndpointBehavior b = (IEndpointBehavior) bxe.CreateBehavior ();
+						se.Behaviors.Add (b);
+				}
 			}
 		}
 
@@ -417,19 +488,34 @@ namespace System.ServiceModel
 			foreach (ServiceEndpoint endPoint in Description.Endpoints)
 				endPoint.Validate ();
 
-			if (Description.Endpoints.FirstOrDefault (e => e.Contract != mex_contract) == null)
-				throw new InvalidOperationException ("The ServiceHost must have at least one application endpoint (that does not include metadata exchange contract) defined by either configuration, behaviors or call to AddServiceEndpoint methods.");
+#if NET_4_0
+			// In 4.0, it seems that if there is no configured ServiceEndpoint, infer them from the service type.
+			if (Description.Endpoints.Count == 0) {
+				foreach (Type iface in Description.ServiceType.GetInterfaces ())
+					if (iface.GetCustomAttributes (typeof (ServiceContractAttribute), true).Length > 0)
+						foreach (var baddr in BaseAddresses) {
+							if (!baddr.IsAbsoluteUri)
+								continue;
+							var binding = ConfigUtil.GetBindingByProtocolMapping (baddr);
+							if (binding == null)
+								continue;
+							AddServiceEndpoint (iface.FullName, binding, baddr);
+						}
+			}
+#endif
+
+			if (Description.Endpoints.FirstOrDefault (e => e.Contract != mex_contract && !e.IsSystemEndpoint) == null)
+				throw new InvalidOperationException ("The ServiceHost must have at least one application endpoint (that does not include metadata exchange endpoint) defined by either configuration, behaviors or call to AddServiceEndpoint methods.");
 		}
 
-		[MonoTODO]
 		protected void LoadConfigurationSection (ServiceElement element)
 		{
-			ServicesSection services = ConfigUtil.ServicesSection;
+			ApplyServiceElement (element);
 		}
 
-		[MonoTODO]
 		protected override sealed void OnAbort ()
 		{
+			OnCloseOrAbort (TimeSpan.Zero);
 		}
 
 		Action<TimeSpan> close_delegate;
@@ -452,6 +538,11 @@ namespace System.ServiceModel
 		}
 
 		protected override void OnClose (TimeSpan timeout)
+		{
+			OnCloseOrAbort (timeout);
+		}
+		
+		void OnCloseOrAbort (TimeSpan timeout)
 		{
 			DateTime start = DateTime.Now;
 			ReleasePerformanceCounters ();
@@ -481,7 +572,8 @@ namespace System.ServiceModel
 					var cd2 = ChannelDispatchers [j];
 					if (cd1.IsMex || cd2.IsMex)
 						continue;
-					if (cd1.Listener.Uri.Equals (cd2.Listener.Uri))
+					// surprisingly, some ChannelDispatcherBase implementations have null Listener property.
+					if (cd1.Listener != null && cd2.Listener != null && cd1.Listener.Uri.Equals (cd2.Listener.Uri))
 						throw new InvalidOperationException ("Two or more service endpoints with different Binding instance are bound to the same listen URI.");
 				}
 			}
@@ -596,6 +688,8 @@ namespace System.ServiceModel
 			foreach (IEndpointBehavior b in endPoint.Behaviors)
 				b.ApplyDispatchBehavior (endPoint, ed);
 			foreach (OperationDescription operation in endPoint.Contract.Operations) {
+				if (operation.InCallbackContract)
+					continue; // irrelevant
 				foreach (IOperationBehavior b in operation.Behaviors)
 					b.ApplyDispatchBehavior (operation, ed.DispatchRuntime.Operations [operation.Name]);
 			}

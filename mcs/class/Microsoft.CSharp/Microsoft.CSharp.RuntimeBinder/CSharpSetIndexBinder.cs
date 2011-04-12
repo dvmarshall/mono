@@ -36,12 +36,14 @@ namespace Microsoft.CSharp.RuntimeBinder
 {
 	class CSharpSetIndexBinder : SetIndexBinder
 	{
+		readonly CSharpBinderFlags flags;
 		IList<CSharpArgumentInfo> argumentInfo;
 		Type callingContext;
 
-		public CSharpSetIndexBinder (Type callingContext, IEnumerable<CSharpArgumentInfo> argumentInfo)
+		public CSharpSetIndexBinder (CSharpBinderFlags flags, Type callingContext, IEnumerable<CSharpArgumentInfo> argumentInfo)
 			: base (CSharpArgumentInfo.CreateCallInfo (argumentInfo, 2))
 		{
+			this.flags = flags;
 			this.callingContext = callingContext;
 			this.argumentInfo = argumentInfo.ToReadOnly ();
 		}
@@ -55,20 +57,30 @@ namespace Microsoft.CSharp.RuntimeBinder
 				return errorSuggestion;
 			}
 
-			var expr = CSharpBinder.CreateCompilerExpression (argumentInfo [0], target);
-			var args = CSharpBinder.CreateCompilerArguments (argumentInfo.Skip (1), indexes);
+			var ctx = DynamicContext.Create ();
+			var expr = ctx.CreateCompilerExpression (argumentInfo [0], target);
+			var args = ctx.CreateCompilerArguments (argumentInfo.Skip (1), indexes);
 			expr = new Compiler.ElementAccess (expr, args, Compiler.Location.Null);
 
-			var source = CSharpBinder.CreateCompilerExpression (argumentInfo [indexes.Length + 1], value);
-			expr = new Compiler.SimpleAssign (expr, source);
-			expr = new Compiler.Cast (new Compiler.TypeExpression (TypeImporter.Import (ReturnType), Compiler.Location.Null), expr, Compiler.Location.Null);
+			var source = ctx.CreateCompilerExpression (argumentInfo [indexes.Length + 1], value);
+
+			// Same conversion as in SetMemberBinder
+			if ((flags & CSharpBinderFlags.ValueFromCompoundAssignment) != 0) {
+				expr = new Compiler.RuntimeExplicitAssign (expr, source);
+			} else {
+				expr = new Compiler.SimpleAssign (expr, source);
+			}
+			expr = new Compiler.Cast (new Compiler.TypeExpression (ctx.ImportType (ReturnType), Compiler.Location.Null), expr, Compiler.Location.Null);
+
+			if ((flags & CSharpBinderFlags.CheckedContext) != 0)
+				expr = new Compiler.CheckedExpr (expr, Compiler.Location.Null);
 
 			var binder = new CSharpBinder (this, expr, errorSuggestion);
 			binder.AddRestrictions (target);
 			binder.AddRestrictions (value);
 			binder.AddRestrictions (indexes);
 
-			return binder.Bind (callingContext, target);
+			return binder.Bind (ctx, callingContext);
 		}
 	}
 }

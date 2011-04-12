@@ -1,6 +1,7 @@
 /Makefile
 /Makefile.in
 /pedump
+/pedump.exe
 /monosn
 /monodiet
 /.libs
@@ -8,6 +9,7 @@
 /*.lo
 /*.la
 /*.o
+/*.a
 /semantic.cache
 /.project
 /.cproject

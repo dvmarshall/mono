@@ -26,6 +26,7 @@
 // WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 //
 using System;
+using System.Collections.Generic;
 using System.Reflection;
 using System.Runtime.Serialization;
 using System.ServiceModel.Channels;
@@ -37,9 +38,27 @@ using System.Xml;
 
 namespace System.ServiceModel.MonoInternal
 {
+#if DISABLE_REAL_PROXY
 	// FIXME: This is a quick workaround for bug #571907
-	public class ClientRuntimeChannel
-		: CommunicationObject, IClientChannel
+	public
+#endif
+	interface IInternalContextChannel
+	{
+		ContractDescription Contract { get; }
+
+		object Process (MethodBase method, string operationName, object [] parameters);
+
+		IAsyncResult BeginProcess (MethodBase method, string operationName, object [] parameters, AsyncCallback callback, object asyncState);
+
+		object EndProcess (MethodBase method, string operationName, object [] parameters, IAsyncResult result);
+	}
+
+#if DISABLE_REAL_PROXY
+	// FIXME: This is a quick workaround for bug #571907
+	public
+#endif
+	class ClientRuntimeChannel
+		: CommunicationObject, IClientChannel, IInternalContextChannel
 	{
 		ClientRuntime runtime;
 		EndpointAddress remote_address;
@@ -72,9 +91,12 @@ namespace System.ServiceModel.MonoInternal
 
 		public ClientRuntimeChannel (ClientRuntime runtime, ContractDescription contract, TimeSpan openTimeout, TimeSpan closeTimeout, IChannel contextChannel, IChannelFactory factory, MessageVersion messageVersion, EndpointAddress remoteAddress, Uri via)
 		{
+			if (runtime == null)
+				throw new ArgumentNullException ("runtime");
 			this.runtime = runtime;
 			this.remote_address = remoteAddress;
-			runtime.Via = via ?? remote_address.Uri;
+			if (runtime.Via == null)
+				runtime.Via = via ?? (remote_address != null ?remote_address.Uri : null);
 			this.contract = contract;
 			this.message_version = messageVersion;
 			default_open_timeout = openTimeout;
@@ -91,8 +113,15 @@ namespace System.ServiceModel.MonoInternal
 				channel = contextChannel;
 			else {
 				var method = factory.GetType ().GetMethod ("CreateChannel", new Type [] {typeof (EndpointAddress), typeof (Uri)});
-				channel = (IChannel) method.Invoke (factory, new object [] {remote_address, Via});
-				this.factory = factory;
+				try {
+					channel = (IChannel) method.Invoke (factory, new object [] {remote_address, Via});
+					this.factory = factory;
+				} catch (TargetInvocationException ex) {
+					if (ex.InnerException != null)
+						throw ex.InnerException;
+					else
+						throw;
+				}
 			}
 		}
 
@@ -352,7 +381,8 @@ namespace System.ServiceModel.MonoInternal
 		protected override void OnClose (TimeSpan timeout)
 		{
 			DateTime start = DateTime.Now;
-			channel.Close (timeout);
+			if (channel.State == CommunicationState.Opened)
+				channel.Close (timeout);
 		}
 
 		Action<TimeSpan> open_callback;
@@ -410,6 +440,7 @@ namespace System.ServiceModel.MonoInternal
 			if (context != null)
 				throw new InvalidOperationException ("another operation is in progress");
 			context = OperationContext.Current;
+
 			return _processDelegate.BeginInvoke (method, operationName, parameters, callback, asyncState);
 		}
 
@@ -529,11 +560,15 @@ namespace System.ServiceModel.MonoInternal
 		{
 			if (RequestChannel != null)
 				return RequestChannel.Request (msg, timeout);
-			else {
-				DateTime startTime = DateTime.Now;
-				OutputChannel.Send (msg, timeout);
-				return ((IDuplexChannel) OutputChannel).Receive (timeout - (DateTime.Now - startTime));
-			}
+			else
+				return RequestCorrelated (msg, timeout, OutputChannel);
+		}
+
+		internal virtual Message RequestCorrelated (Message msg, TimeSpan timeout, IOutputChannel channel)
+		{
+			DateTime startTime = DateTime.Now;
+			OutputChannel.Send (msg, timeout);
+			return ((IDuplexChannel) channel).Receive (timeout - (DateTime.Now - startTime));
 		}
 
 		internal IAsyncResult BeginRequest (Message msg, TimeSpan timeout, AsyncCallback callback, object state)
@@ -548,7 +583,10 @@ namespace System.ServiceModel.MonoInternal
 
 		internal void Send (Message msg, TimeSpan timeout)
 		{
-			OutputChannel.Send (msg, timeout);
+			if (OutputChannel != null)
+				OutputChannel.Send (msg, timeout);
+			else
+				RequestChannel.Request (msg, timeout); // and ignore returned message.
 		}
 
 		internal IAsyncResult BeginSend (Message msg, TimeSpan timeout, AsyncCallback callback, object state)
@@ -602,7 +640,7 @@ namespace System.ServiceModel.MonoInternal
 					msg.Headers.MessageId = new UniqueId ();
 				if (msg.Headers.ReplyTo == null)
 					msg.Headers.ReplyTo = new EndpointAddress (Constants.WsaAnonymousUri);
-				if (msg.Headers.To == null)
+				if (msg.Headers.To == null && RemoteAddress != null)
 					msg.Headers.To = RemoteAddress.Uri;
 			}
 

@@ -38,7 +38,8 @@ namespace MonoTests.System.Xaml.Schema
 		[Test]
 		public void ConstructorDefault ()
 		{
-			new XamlTypeName ();
+			var xtn = new XamlTypeName ();
+			Assert.IsNotNull (xtn.TypeArguments, "#1");
 		}
 
 		[Test]
@@ -52,14 +53,16 @@ namespace MonoTests.System.Xaml.Schema
 		public void ConstructorNameNull ()
 		{
 			// allowed.
-			new XamlTypeName ("urn:foo", null);
+			var xtn = new XamlTypeName ("urn:foo", null);
+			Assert.IsNotNull (xtn.TypeArguments, "#1");
 		}
 
 		[Test]
 		public void ConstructorNamespaceNull ()
 		{
 			// allowed.
-			new XamlTypeName (null, "FooBar");
+			var xtn = new XamlTypeName (null, "FooBar");
+			Assert.IsNotNull (xtn.TypeArguments, "#1");
 		}
 
 		[Test]
@@ -196,6 +199,20 @@ namespace MonoTests.System.Xaml.Schema
 			lookup.Add ("c", "urn:baz");
 			Assert.AreEqual ("a:Foo(b:Bar, c:Baz)", n.ToString (lookup), "#1");
 			Assert.AreEqual ("b:Bar, c:Baz", XamlTypeName.ToString (n.TypeArguments, lookup), "#2");
+		}
+
+		// This test shows that MarkupExtension names are not replaced at XamlTypeName.ToString(), while XamlXmlWriter writes like "x:Null".
+		[Test]
+		public void ToStringNamespaceLookup2 ()
+		{
+			var lookup = new MyNamespaceLookup ();
+			lookup.Add ("x", XamlLanguage.Xaml2006Namespace);
+			Assert.AreEqual ("x:NullExtension", new XamlTypeName (XamlLanguage.Null).ToString (lookup), "#1");
+			// WHY is TypeExtension not the case?
+			//Assert.AreEqual ("x:TypeExtension", new XamlTypeName (XamlLanguage.Type).ToString (lookup), "#2");
+			Assert.AreEqual ("x:ArrayExtension", new XamlTypeName (XamlLanguage.Array).ToString (lookup), "#3");
+			Assert.AreEqual ("x:StaticExtension", new XamlTypeName (XamlLanguage.Static).ToString (lookup), "#4");
+			Assert.AreEqual ("x:Reference", new XamlTypeName (XamlLanguage.Reference).ToString (lookup), "#5");
 		}
 
 		[Test]
@@ -378,6 +395,32 @@ namespace MonoTests.System.Xaml.Schema
 			l = XamlTypeName.ParseList ("foo,bar", new MyNSResolver ());
 			Assert.AreEqual ("{}foo", l [0].ToString (), "#4");
 			Assert.AreEqual ("{}bar", l [1].ToString (), "#5");
+		}
+		
+		[Test]
+		public void GenericArrayName ()
+		{
+			var ns = new MyNSResolver ();
+			ns.Add ("s", "urn:foo");
+			var xn = XamlTypeName.Parse ("s:Nullable(s:Int32)[,,]", ns);
+			Assert.AreEqual ("urn:foo", xn.Namespace, "#1");
+			// note that array suffix comes here.
+			Assert.AreEqual ("Nullable[,,]", xn.Name, "#2");
+			// note that array suffix is detached from Name and appended after generic type arguments.
+			Assert.AreEqual ("{urn:foo}Nullable({urn:foo}Int32)[,,]", xn.ToString (), "#3");
+		}
+
+		[Test]
+		public void GenericGenericName ()
+		{
+			var ns = new MyNSResolver ();
+			ns.Add ("s", "urn:foo");
+			ns.Add ("", "urn:bar");
+			ns.Add ("x", XamlLanguage.Xaml2006Namespace);
+			var xn = XamlTypeName.Parse ("List(KeyValuePair(x:Int32, s:DateTime))", ns);
+			Assert.AreEqual ("urn:bar", xn.Namespace, "#1");
+			Assert.AreEqual ("List", xn.Name, "#2");
+			Assert.AreEqual ("{urn:bar}List({urn:bar}KeyValuePair({http://schemas.microsoft.com/winfx/2006/xaml}Int32, {urn:foo}DateTime))", xn.ToString (), "#3");
 		}
 
 		class MyNSResolver : IXamlNamespaceResolver

@@ -114,7 +114,6 @@ typedef struct
 #define MONO_ARCH_SIGNAL_STACK_SIZE 			256*1024
 #define MONO_ARCH_HAVE_DECOMPOSE_OPTS 			1
 #define MONO_ARCH_HAVE_CREATE_DELEGATE_TRAMPOLINE	1
-#define MONO_ARCH_HAVE_THROW_CORLIB_EXCEPTION		1
 #define MONO_ARCH_HAVE_IMT 				1
 #define MONO_ARCH_IMT_REG				s390_r9
 #define MONO_ARCH_THIS_AS_FIRST_ARG     		1
@@ -212,6 +211,8 @@ typedef struct
 		sframe = (MonoS390StackFrame*)sframe->prev;		\
 		MONO_CONTEXT_SET_IP ((ctx), sframe->return_address);	\
 	} while (0)
+
+#define MONO_ARCH_INIT_TOP_LMF_ENTRY(lmf) do { (lmf)->ebp = -1; } while (0)
 
 /*------------------------------------------------------------------*/
 /*                                                                  */

@@ -177,10 +177,6 @@ namespace Microsoft.Build.BuildEngine {
 					throw new InvalidProjectFileException ("This is not output property.");
 				
 				o = propertyInfo.GetValue (task, null);
-				// FIXME: maybe we should throw an exception here?
-				if (o == null)
-					continue;
-				
 				if (itemName != String.Empty) {
 					PublishItemGroup (propertyInfo, o, itemName);
 				} else {
@@ -198,7 +194,19 @@ namespace Microsoft.Build.BuildEngine {
 					      object o,
 					      string propertyName)
 		{
-			BuildProperty bp = ChangeType.ToBuildProperty (o, propertyInfo.PropertyType, propertyName);
+			if (o == null) {
+				parentProject.EvaluatedProperties.RemoveProperty (propertyName);
+				return;
+			}
+
+			BuildProperty bp;
+			try {
+				bp = ChangeType.ToBuildProperty (o, propertyInfo.PropertyType, propertyName);
+			} catch (Exception e) {
+				throw new Exception (String.Format ("Error publishing Output from task property '{0} {1}' to property named '{2}' : {3}",
+							propertyInfo.PropertyType, propertyInfo.Name, propertyName, e.Message),
+							e);
+			}
 			parentProject.EvaluatedProperties.AddProperty (bp);
 		}
 
@@ -207,7 +215,18 @@ namespace Microsoft.Build.BuildEngine {
 					       object o,
 					       string itemName)
 		{
-			BuildItemGroup newItems = ChangeType.ToBuildItemGroup (o, propertyInfo.PropertyType, itemName);
+			if (o == null)
+				return;
+
+			BuildItemGroup newItems;
+			try {
+				newItems = ChangeType.ToBuildItemGroup (o, propertyInfo.PropertyType, itemName);
+			} catch (Exception e) {
+				throw new Exception (String.Format ("Error publishing Output from task property '{0} {1}' to item named '{2}' : {3}",
+							propertyInfo.PropertyType, propertyInfo.Name, itemName, e.Message),
+							e);
+			}
+
 			newItems.ParentProject = parentProject;
 			
 			if (parentProject.EvaluatedItemsByName.ContainsKey (itemName)) {
