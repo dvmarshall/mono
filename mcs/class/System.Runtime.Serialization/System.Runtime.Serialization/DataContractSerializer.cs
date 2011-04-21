@@ -231,7 +231,8 @@ namespace System.Runtime.Serialization
 			object [] attrs = elementType.GetCustomAttributes (typeof (KnownTypeAttribute), true);
 			for (int i = 0; i < attrs.Length; i ++) {
 				KnownTypeAttribute kt = (KnownTypeAttribute) attrs [i];
-				known_types.Add (kt.Type);
+				foreach (var t in kt.GetTypes (elementType))
+					known_types.Add (t);
 			}
 		}
 
@@ -457,8 +458,7 @@ namespace System.Runtime.Serialization
 
 			if (rootQName == null &&
 			    graph.GetType () != type &&
-			    !known_types.Contains (graph.GetType ()) &&
-			    KnownTypeCollection.GetPrimitiveTypeName (graph.GetType ()) == QName.Empty)
+			    IsUnknownType (graph.GetType ()))
 				throw new SerializationException (String.Format ("Type '{0}' is unexpected. The type should either be registered as a known type, or DataContractResolver should be used.", graph.GetType ()));
 
 			QName instName = rootQName;
@@ -501,6 +501,16 @@ namespace System.Runtime.Serialization
 			writer.WriteQualifiedName (instName.Name, instName.Namespace);
 			writer.WriteEndAttribute ();
 */
+		}
+		
+		bool IsUnknownType (Type type)
+		{
+			if (known_types.Contains (type) ||
+			    KnownTypeCollection.GetPrimitiveTypeName (type) != QName.Empty)
+				return false;
+			if (type.IsArray)
+				return IsUnknownType (type.GetElementType ());
+			return true;
 		}
 
 		public override void WriteEndObject (XmlDictionaryWriter writer)

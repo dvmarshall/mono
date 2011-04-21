@@ -1935,7 +1935,11 @@ target_type_is_incompatible (MonoCompile *cfg, MonoType *target, MonoInst *arg)
 	case MONO_TYPE_I:
 	case MONO_TYPE_U:
 	case MONO_TYPE_FNPTR:
-		if (arg->type != STACK_I4 && arg->type != STACK_PTR)
+		/* 
+		 * Some opcodes like ldloca returns 'transient pointers' which can be stored in
+		 * in native int. (#688008).
+		 */
+		if (arg->type != STACK_I4 && arg->type != STACK_PTR && arg->type != STACK_MP)
 			return 1;
 		return 0;
 	case MONO_TYPE_CLASS:
@@ -5788,7 +5792,8 @@ mono_method_to_ir (MonoCompile *cfg, MonoMethod *method, MonoBasicBlock *start_b
 				MONO_INST_NEW (cfg, ins, OP_START_HANDLER);
 				MONO_ADD_INS (tblock, ins);
 
-				if (seq_points) {
+				if (seq_points && clause->flags != MONO_EXCEPTION_CLAUSE_FINALLY) {
+					/* finally clauses already have a seq point */
 					NEW_SEQ_POINT (cfg, ins, clause->handler_offset, TRUE);
 					MONO_ADD_INS (tblock, ins);
 				}
