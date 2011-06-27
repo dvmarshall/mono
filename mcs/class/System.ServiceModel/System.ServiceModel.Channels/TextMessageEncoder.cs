@@ -64,6 +64,8 @@ namespace System.ServiceModel.Channels
 		public override Message ReadMessage (ArraySegment<byte> buffer,
 			BufferManager bufferManager, string contentType)
 		{
+			if (bufferManager == null)
+				throw new ArgumentNullException ("bufferManager");
 			return Message.CreateMessage (
 				XmlDictionaryReader.CreateDictionaryReader (
 					XmlReader.Create (new StreamReader (
@@ -75,15 +77,18 @@ namespace System.ServiceModel.Channels
 				version);
 		}
 
-		[MonoTODO]
 		public override Message ReadMessage (Stream stream,
 			int maxSizeOfHeaders, string contentType)
 		{
-			return Message.CreateMessage (
+			if (stream == null)
+				throw new ArgumentNullException ("stream");
+			var ret = Message.CreateMessage (
 				XmlDictionaryReader.CreateDictionaryReader (
 					XmlReader.Create (new StreamReader (stream, encoding))),
 				maxSizeOfHeaders,
 				version);
+			ret.Properties.Encoder = this;
+			return ret;
 		}
 
 		public override void WriteMessage (Message message, Stream stream)

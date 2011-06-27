@@ -315,7 +315,6 @@ namespace MonoTests.System.Runtime.Serialization
 
 		[Test]
 		[ExpectedException (typeof (SerializationException))]
-		[Category ("NotWorking")] // behavior changed in 3.5/SP1
 		public void SerializeSimpleXml ()
 		{
 			DataContractSerializer ser =
@@ -980,7 +979,6 @@ namespace MonoTests.System.Runtime.Serialization
 		}
 
 		[Test]
-		[Category ("NotWorking")]
 		public void DeserializeDCWithNullableEnum ()
 		{
 			DCWithNullableEnum dc = Deserialize<DCWithNullableEnum> (
@@ -1574,6 +1572,17 @@ namespace MonoTests.System.Runtime.Serialization
 				obj = serializer.ReadObject (new XmlTextReader (reader)) as XmlDocumentContract;
 			Assert.AreEqual ("Hello, world!", obj.Content != null ? obj.Content.InnerText : String.Empty, "#2");
 			Assert.AreEqual (2, obj.Nodes != null ? obj.Nodes.Length : -1, "#3");
+		}
+
+		[Test]
+		public void ArrayAsEnumerableAsRoot ()
+		{
+			var ds = new DataContractSerializer (typeof (IEnumerable<Guid>));
+			var sw = new StringWriter ();
+			using (var xw = XmlWriter.Create (sw, settings))
+				ds.WriteObject (xw, new Guid [] {Guid.Empty});
+			string xml = "<ArrayOfguid xmlns:i='http://www.w3.org/2001/XMLSchema-instance' xmlns='http://schemas.microsoft.com/2003/10/Serialization/Arrays'><guid>00000000-0000-0000-0000-000000000000</guid></ArrayOfguid>".Replace ('\'', '"');
+			Assert.AreEqual (xml, sw.ToString (), "#1");
 		}
 	}
 	

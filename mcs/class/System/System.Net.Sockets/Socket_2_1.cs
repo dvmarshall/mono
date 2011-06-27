@@ -9,7 +9,7 @@
 //
 // Copyright (C) 2001, 2002 Phillip Pearson and Ximian, Inc.
 //    http://www.myelin.co.nz
-// (c) 2004-2006 Novell, Inc. (http://www.novell.com)
+// (c) 2004-2011 Novell, Inc. (http://www.novell.com)
 //
 
 //
@@ -47,6 +47,9 @@ using System.Text;
 #if !NET_2_1
 using System.Net.Configuration;
 using System.Net.NetworkInformation;
+#endif
+#if MOONLIGHT && !INSIDE_SYSTEM
+using System.Net.Policy;
 #endif
 
 namespace System.Net.Sockets {
@@ -119,6 +122,7 @@ namespace System.Net.Sockets {
 
 			// These fields are not in MonoSocketAsyncResult
 			public Worker Worker;
+			public int CurrentAddress; // Connect
 
 			public SocketAsyncResult ()
 			{
@@ -164,6 +168,17 @@ namespace System.Net.Sockets {
 				ares = null;
 				EndCalled = 0;
 				Worker = null;
+			}
+
+			public void DoMConnectCallback ()
+			{
+				if (callback == null)
+					return;
+#if MOONLIGHT
+				ThreadPool.QueueUserWorkItem (_ => { callback (this); }, null);
+#else
+				ThreadPool.UnsafeQueueUserWorkItem (_ => { callback (this); }, null);
+#endif
 			}
 
 			public void Dispose ()
@@ -353,8 +368,7 @@ namespace System.Net.Sockets {
 				set { total = value; }
 			}
 
-			public SocketError ErrorCode
-			{
+			public SocketError ErrorCode {
 				get {
 					SocketException ex = delayedException as SocketException;
 					if (ex != null)
@@ -550,68 +564,61 @@ namespace System.Net.Sockets {
 
 			public void Connect ()
 			{
-				/* If result.EndPoint is non-null,
-				 * this is the standard one-address
-				 * connect attempt.  Otherwise
-				 * Addresses must be non-null and
-				 * contain a list of addresses to try
-				 * to connect to; the first one to
-				 * succeed causes the rest of the list
-				 * to be ignored.
-				 */
-				if (result.EndPoint != null) {
-					try {
-						if (!result.Sock.Blocking) {
-							int success;
-							result.Sock.Poll (-1, SelectMode.SelectWrite, out success);
-							if (success == 0) {
-								result.Sock.seed_endpoint = result.EndPoint;
-								result.Sock.connected = true;
-							} else {
-								result.Complete (new SocketException (success));
-								return;
-							}
-						} else {
-							result.Sock.seed_endpoint = result.EndPoint;
-							result.Sock.Connect (result.EndPoint);
-							result.Sock.connected = true;
-						}
-					} catch (Exception e) {
-						result.Complete (e);
+				if (result.EndPoint == null) {
+					result.Complete (new SocketException ((int)SocketError.AddressNotAvailable));
+					return;
+				}
+
+				SocketAsyncResult mconnect = result.AsyncState as SocketAsyncResult;
+#if !MOONLIGHT
+				bool is_mconnect = (mconnect != null && mconnect.Addresses != null);
+#else
+				if (result.ErrorCode == SocketError.AccessDenied) {
+					result.Complete ();
+					result.DoMConnectCallback ();
+					return;
+				}
+				bool is_mconnect = false;
+#endif
+				try {
+					int error_code;
+					EndPoint ep = result.EndPoint;
+					error_code = (int) result.Sock.GetSocketOption (SocketOptionLevel.Socket, SocketOptionName.Error);
+					if (error_code == 0) {
+						if (is_mconnect)
+							result = mconnect;
+						result.Sock.seed_endpoint = ep;
+						result.Sock.connected = true;
+						result.Sock.isbound = true;
+						result.Sock.connect_in_progress = false;
+						result.error = 0;
+						result.Complete ();
+						if (is_mconnect)
+							result.DoMConnectCallback ();
 						return;
 					}
 
-					result.Complete ();
-				} else if (result.Addresses != null) {
-					int error = (int) SocketError.InProgress; // why?
-					foreach(IPAddress address in result.Addresses) {
-						IPEndPoint iep = new IPEndPoint (address, result.Port);
-						SocketAddress serial = iep.Serialize ();
-						Socket.Connect_internal (result.Sock.socket, serial, out error);
-						if (error == 0) {
-							result.Sock.connected = true;
-							result.Sock.seed_endpoint = iep;
-							result.Complete ();
-							return;
-						} else if (error != (int)SocketError.InProgress &&
-							   error != (int)SocketError.WouldBlock) {
-							continue;
-						}
-
-						if (!result.Sock.Blocking) {
-							int success;
-							result.Sock.Poll (-1, SelectMode.SelectWrite, out success);
-							if (success == 0) {
-								result.Sock.connected = true;
-								result.Sock.seed_endpoint = iep;
-								result.Complete ();
-								return;
-							}
-						}
+					if (!is_mconnect) {
+						result.Sock.connect_in_progress = false;
+						result.Complete (new SocketException (error_code));
+						return;
 					}
-					result.Complete (new SocketException (error));
-				} else {
-					result.Complete (new SocketException ((int)SocketError.AddressNotAvailable));
+
+					if (mconnect.CurrentAddress >= mconnect.Addresses.Length) {
+						mconnect.Complete (new SocketException (error_code));
+						if (is_mconnect)
+							mconnect.DoMConnectCallback ();
+						return;
+					}
+					mconnect.Sock.BeginMConnect (mconnect);
+				} catch (Exception e) {
+					result.Sock.connect_in_progress = false;
+					if (is_mconnect)
+						result = mconnect;
+					result.Complete (e);
+					if (is_mconnect)
+						result.DoMConnectCallback ();
+					return;
 				}
 			}
 
@@ -860,6 +867,7 @@ namespace System.Net.Sockets {
 		/* true if we called Close_internal */
 		private bool closed;
 		internal bool disposed;
+		bool connect_in_progress;
 
 		/*
 		 * This EndPoint is used when creating new endpoints. Because
@@ -1322,42 +1330,6 @@ namespace System.Net.Sockets {
 		[MethodImplAttribute(MethodImplOptions.InternalCall)]
 		extern static bool Poll_internal (IntPtr socket, SelectMode mode, int timeout, out int error);
 
-		/* This overload is needed as the async Connect method
-		 * also needs to check the socket error status, but
-		 * getsockopt(..., SO_ERROR) clears the error.
-		 */
-		internal bool Poll (int time_us, SelectMode mode, out int socket_error)
-		{
-			if (disposed && closed)
-				throw new ObjectDisposedException (GetType ().ToString ());
-
-			if (mode != SelectMode.SelectRead &&
-			    mode != SelectMode.SelectWrite &&
-			    mode != SelectMode.SelectError)
-				throw new NotSupportedException ("'mode' parameter is not valid.");
-
-			int error;
-			bool result = Poll_internal (socket, mode, time_us, out error);
-			if (error != 0)
-				throw new SocketException (error);
-
-			socket_error = (int)GetSocketOption (SocketOptionLevel.Socket, SocketOptionName.Error);
-			
-			if (mode == SelectMode.SelectWrite && result) {
-				/* Update the connected state; for
-				 * non-blocking Connect()s this is
-				 * when we can find out that the
-				 * connect succeeded.
-				 */
-				if (socket_error == 0) {
-					connected = true;
-					isbound = true;
-				}
-			}
-			
-			return result;
-		}
-
 		[MethodImplAttribute(MethodImplOptions.InternalCall)]
 		private extern static int Receive_internal(IntPtr sock,
 							   byte[] buffer,
@@ -1487,6 +1459,245 @@ namespace System.Net.Sockets {
 #endif
 		}
 
+#if !MOONLIGHT
+		public
+#endif
+		IAsyncResult BeginConnect(EndPoint end_point, AsyncCallback callback, object state)
+		{
+			if (disposed && closed)
+				throw new ObjectDisposedException (GetType ().ToString ());
+
+			if (end_point == null)
+				throw new ArgumentNullException ("end_point");
+
+			SocketAsyncResult req = new SocketAsyncResult (this, state, callback, SocketOperation.Connect);
+			req.EndPoint = end_point;
+
+			// Bug #75154: Connect() should not succeed for .Any addresses.
+			if (end_point is IPEndPoint) {
+				IPEndPoint ep = (IPEndPoint) end_point;
+				if (ep.Address.Equals (IPAddress.Any) || ep.Address.Equals (IPAddress.IPv6Any)) {
+					req.Complete (new SocketException ((int) SocketError.AddressNotAvailable), true);
+					return req;
+				}
+			}
+
+			int error = 0;
+			if (connect_in_progress) {
+				// This could happen when multiple IPs are used
+				// Calling connect() again will reset the connection attempt and cause
+				// an error. Better to just close the socket and move on.
+				connect_in_progress = false;
+				Close_internal (socket, out error);
+				socket = Socket_internal (address_family, socket_type, protocol_type, out error);
+				if (error != 0)
+					throw new SocketException (error);
+			}
+			bool blk = blocking;
+			if (blk)
+				Blocking = false;
+			SocketAddress serial = end_point.Serialize ();
+			Connect_internal (socket, serial, out error);
+			if (blk)
+				Blocking = true;
+			if (error == 0) {
+				// succeeded synch
+				connected = true;
+				isbound = true;
+				req.Complete (true);
+				return req;
+			}
+
+			if (error != (int) SocketError.InProgress && error != (int) SocketError.WouldBlock) {
+				// error synch
+				connected = false;
+				isbound = false;
+				req.Complete (new SocketException (error), true);
+				return req;
+			}
+
+			// continue asynch
+			connected = false;
+			isbound = false;
+			connect_in_progress = true;
+			socket_pool_queue (Worker.Dispatcher, req);
+			return req;
+		}
+
+#if !MOONLIGHT
+		public
+#else
+		internal
+#endif
+		IAsyncResult BeginConnect (IPAddress[] addresses, int port, AsyncCallback callback, object state)
+
+		{
+			if (disposed && closed)
+				throw new ObjectDisposedException (GetType ().ToString ());
+
+			if (addresses == null)
+				throw new ArgumentNullException ("addresses");
+
+			if (addresses.Length == 0)
+				throw new ArgumentException ("Empty addresses list");
+
+			if (this.AddressFamily != AddressFamily.InterNetwork &&
+				this.AddressFamily != AddressFamily.InterNetworkV6)
+				throw new NotSupportedException ("This method is only valid for addresses in the InterNetwork or InterNetworkV6 families");
+
+			if (port <= 0 || port > 65535)
+				throw new ArgumentOutOfRangeException ("port", "Must be > 0 and < 65536");
+#if !MOONLIGHT
+			if (islistening)
+				throw new InvalidOperationException ();
+#endif
+
+			SocketAsyncResult req = new SocketAsyncResult (this, state, callback, SocketOperation.Connect);
+			req.Addresses = addresses;
+			req.Port = port;
+			connected = false;
+			return BeginMConnect (req);
+		}
+
+		IAsyncResult BeginMConnect (SocketAsyncResult req)
+		{
+			IAsyncResult ares = null;
+			Exception exc = null;
+			for (int i = req.CurrentAddress; i < req.Addresses.Length; i++) {
+				IPAddress addr = req.Addresses [i];
+				IPEndPoint ep = new IPEndPoint (addr, req.Port);
+				try {
+					req.CurrentAddress++;
+					ares = BeginConnect (ep, null, req);
+					if (ares.IsCompleted && ares.CompletedSynchronously) {
+						((SocketAsyncResult) ares).CheckIfThrowDelayedException ();
+						req.DoMConnectCallback ();
+					}
+					break;
+				} catch (Exception e) {
+					exc = e;
+					ares = null;
+				}
+			}
+
+			if (ares == null)
+				throw exc;
+
+			return req;
+		}
+
+		// Returns false when it is ok to use RemoteEndPoint
+		//         true when addresses must be used (and addresses could be null/empty)
+		bool GetCheckedIPs (SocketAsyncEventArgs e, out IPAddress [] addresses)
+		{
+			addresses = null;
+#if MOONLIGHT || NET_4_0
+			// Connect to the first address that match the host name, like:
+			// http://blogs.msdn.com/ncl/archive/2009/07/20/new-ncl-features-in-net-4-0-beta-2.aspx
+			// while skipping entries that do not match the address family
+			DnsEndPoint dep = (e.RemoteEndPoint as DnsEndPoint);
+			if (dep != null) {
+				addresses = Dns.GetHostAddresses (dep.Host);
+				IPEndPoint endpoint;
+#if MOONLIGHT && !INSIDE_SYSTEM
+				if (!e.PolicyRestricted && !SecurityManager.HasElevatedPermissions) {
+					List<IPAddress> valid = new List<IPAddress> ();
+					foreach (IPAddress a in addresses) {
+						// if we're not downloading a socket policy then check the policy
+						// and if we're not running with elevated permissions (SL4 OoB option)
+						endpoint = new IPEndPoint (a, dep.Port);
+						if (!CrossDomainPolicyManager.CheckEndPoint (endpoint, e.SocketClientAccessPolicyProtocol))
+							continue;
+						valid.Add (a);
+					}
+					if (valid.Count == 0)
+		 				e.SocketError = SocketError.AccessDenied;
+					addresses = valid.ToArray ();
+				}
+#endif
+				return true;
+			} else {
+				e.ConnectByNameError = null;
+#if MOONLIGHT && !INSIDE_SYSTEM
+				if (!e.PolicyRestricted && !SecurityManager.HasElevatedPermissions) {
+					if (CrossDomainPolicyManager.CheckEndPoint (e.RemoteEndPoint, e.SocketClientAccessPolicyProtocol))
+						return false;
+		 			else
+						e.SocketError = SocketError.AccessDenied;
+				} else
+#endif
+					return false;
+			}
+			return true; // do not use remote endpoint
+#else
+			return false; // < NET_4_0 -> use remote endpoint
+#endif
+		}
+
+		bool ConnectAsyncReal (SocketAsyncEventArgs e)
+		{
+			IPAddress [] addresses = null;
+			bool use_remoteep = true;
+#if MOONLIGHT || NET_4_0
+			use_remoteep = !GetCheckedIPs (e, out addresses);
+			bool policy_failed = (e.SocketError == SocketError.AccessDenied);
+#endif
+			e.curSocket = this;
+			Worker w = e.Worker;
+			w.Init (this, e, SocketOperation.Connect);
+			SocketAsyncResult result = w.result;
+#if MOONLIGHT
+			if (policy_failed) {
+				// SocketAsyncEventArgs.Completed must be called
+				connected = false;
+				result.EndPoint = e.RemoteEndPoint;
+				result.error = (int) SocketError.AccessDenied;
+				result.Complete ();
+				socket_pool_queue (Worker.Dispatcher, result);
+				return true;
+			}
+#endif
+			IAsyncResult ares = null;
+			try {
+				if (use_remoteep) {
+					result.EndPoint = e.RemoteEndPoint;
+					ares = BeginConnect (e.RemoteEndPoint, SocketAsyncEventArgs.Dispatcher, e);
+				}
+#if MOONLIGHT || NET_4_0
+				else {
+
+					DnsEndPoint dep = (e.RemoteEndPoint as DnsEndPoint);
+					result.Addresses = addresses;
+					result.Port = dep.Port;
+
+					ares = BeginConnect (addresses, dep.Port, SocketAsyncEventArgs.Dispatcher, e);
+				}
+#endif
+				if (ares.IsCompleted && ares.CompletedSynchronously) {
+					((SocketAsyncResult) ares).CheckIfThrowDelayedException ();
+					return false;
+				}
+			} catch (Exception exc) {
+				result.Complete (exc, true);
+				return false;
+			}
+			return true;
+		}
+
+#if !MOONLIGHT
+		public bool ConnectAsync (SocketAsyncEventArgs e)
+		{
+			// NO check is made whether e != null in MS.NET (NRE is thrown in such case)
+			if (disposed && closed)
+				throw new ObjectDisposedException (GetType ().ToString ());
+			if (islistening)
+				throw new InvalidOperationException ("You may not perform this operation after calling the Listen method.");
+			if (e.RemoteEndPoint == null)
+				throw new ArgumentNullException ("remoteEP");
+
+			return ConnectAsyncReal (e);
+		}
+#endif
 #if MOONLIGHT
 		static void CheckConnect (SocketAsyncEventArgs e)
 		{
@@ -1509,10 +1720,10 @@ namespace System.Net.Sockets {
 			if ((raf != AddressFamily.Unspecified) && (raf != AddressFamily))
 				throw new NotSupportedException ("AddressFamily mismatch between socket and endpoint");
 
-			e.DoOperation (SocketAsyncOperation.Connect, this);
-
-			// We always return true for now
-			return true;
+			// connected, not yet connected or even policy denied, the Socket.RemoteEndPoint is always 
+			// available after the ConnectAsync call
+			seed_endpoint = e.RemoteEndPoint;
+			return ConnectAsyncReal (e);
 		}
 
 		public static bool ConnectAsync (SocketType socketType, ProtocolType protocolType, SocketAsyncEventArgs e)
@@ -1525,10 +1736,7 @@ namespace System.Net.Sockets {
 			if (raf == AddressFamily.Unspecified)
 				raf = AddressFamily.InterNetwork;
 			Socket s = new Socket (raf, socketType, protocolType);
-			e.DoOperation (SocketAsyncOperation.Connect, s);
-
-			// We always return true for now
-			return true;
+			return s.ConnectAsyncReal (e);
 		}
 
 		public static void CancelConnectAsync (SocketAsyncEventArgs e)
@@ -1536,6 +1744,7 @@ namespace System.Net.Sockets {
 			if (e == null)
 				throw new ArgumentNullException ("e");
 
+			// FIXME: this is canceling a synchronous connect, not an async one
 			Socket s = e.ConnectSocket;
 			if ((s != null) && (s.blocking_thread != null))
 				s.blocking_thread.Abort ();
@@ -1607,6 +1816,11 @@ namespace System.Net.Sockets {
 
 			for(int i = 0; i < numsegments; i++) {
 				ArraySegment<byte> segment = buffers[i];
+
+				if (segment.Offset < 0 || segment.Count < 0 ||
+				    segment.Count > segment.Array.Length - segment.Offset)
+					throw new ArgumentOutOfRangeException ("segment");
+
 				gch[i] = GCHandle.Alloc (segment.Array, GCHandleType.Pinned);
 				bufarray[i].len = segment.Count;
 				bufarray[i].buf = Marshal.UnsafeAddrOfPinnedArrayElement (segment.Array, segment.Offset);
@@ -1684,6 +1898,11 @@ namespace System.Net.Sockets {
 			GCHandle[] gch = new GCHandle[numsegments];
 			for(int i = 0; i < numsegments; i++) {
 				ArraySegment<byte> segment = buffers[i];
+
+				if (segment.Offset < 0 || segment.Count < 0 ||
+				    segment.Count > segment.Array.Length - segment.Offset)
+					throw new ArgumentOutOfRangeException ("segment");
+
 				gch[i] = GCHandle.Alloc (segment.Array, GCHandleType.Pinned);
 				bufarray[i].len = segment.Count;
 				bufarray[i].buf = Marshal.UnsafeAddrOfPinnedArrayElement (segment.Array, segment.Offset);

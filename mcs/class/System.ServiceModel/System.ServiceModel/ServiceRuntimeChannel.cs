@@ -116,11 +116,13 @@ namespace System.ServiceModel.MonoInternal
 		}
 	}
 
+	// Its lifetime is per-session.
+	// InputOrReplyRequestProcessor's lifetime is per-call.
 #if DISABLE_REAL_PROXY
 	// FIXME: this is a (similar) workaround for bug 571907.
 	public
 #endif
-	class ServiceRuntimeChannel : CommunicationObject, IServiceChannel
+	class ServiceRuntimeChannel : CommunicationObject, IServiceChannel, IDisposable
 	{
 		IExtensionCollection<IContextChannel> extensions;
 		readonly IChannel channel;
@@ -129,8 +131,12 @@ namespace System.ServiceModel.MonoInternal
 		public ServiceRuntimeChannel (IChannel channel, DispatchRuntime runtime)
 		{
 			this.channel = channel;
-			channel.Closing += delegate { Close (); };
 			this.runtime = runtime;
+		}
+
+		void OnChannelClose (object o, EventArgs e)
+		{
+			Close ();
 		}
 
 		#region IContextChannel
@@ -196,21 +202,24 @@ namespace System.ServiceModel.MonoInternal
 			channel.Abort ();
 		}
 
+		Action<TimeSpan> close_delegate;
+
 		protected override IAsyncResult OnBeginClose (
 			TimeSpan timeout, AsyncCallback callback, object state)
 		{
-			return channel.BeginClose (timeout, callback, state);
+			if (close_delegate == null)
+				close_delegate = new Action<TimeSpan> (OnClose);
+			return close_delegate.BeginInvoke (timeout, callback, state);
 		}
 
 		protected override void OnEndClose (IAsyncResult result)
 		{
-			channel.EndClose (result);
+			close_delegate.EndInvoke (result);
 		}
 
 		protected override void OnClose (TimeSpan timeout)
 		{
-			if (channel.State == CommunicationState.Opened)
-				channel.Close (timeout);
+			channel.Closing -= OnChannelClose;
 		}
 
 		protected override IAsyncResult OnBeginOpen (

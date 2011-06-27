@@ -235,7 +235,7 @@ namespace System.ServiceModel.Description
 					if (GetOperationContractAttribute (end) != null)
 						throw new InvalidOperationException ("Async 'End' method must not have OperationContractAttribute. It is automatically treated as the EndMethod of the corresponding 'Begin' method.");
 				}
-				OperationDescription od = GetOrCreateOperation (cd, mi, serviceMethods [i], oca, end != null ? end.ReturnType : null, isCallback);
+				OperationDescription od = GetOrCreateOperation (cd, mi, serviceMethods [i], oca, end != null ? end.ReturnType : null, isCallback, givenServiceType);
 				if (end != null)
 					od.EndMethod = end;
 			}
@@ -269,7 +269,8 @@ namespace System.ServiceModel.Description
 			ContractDescription cd, MethodInfo mi, MethodInfo serviceMethod,
 			OperationContractAttribute oca,
 			Type asyncReturnType,
-			bool isCallback)
+			bool isCallback,
+			Type givenServiceType)
 		{
 			string name = oca.Name ?? (oca.AsyncPattern ? mi.Name.Substring (5) : mi.Name);
 
@@ -283,7 +284,7 @@ namespace System.ServiceModel.Description
 				if (HasInvalidMessageContract (mi, oca.AsyncPattern))
 					throw new InvalidOperationException (String.Format ("The operation {0} contains more than one parameters and one or more of them are marked with MessageContractAttribute, but the attribute must be used within an operation that has only one parameter.", od.Name));
 
-#if !NET_2_1
+#if !MOONLIGHT
 				var xfa = serviceMethod.GetCustomAttribute<XmlSerializerFormatAttribute> (false);
 				if (xfa != null)
 					od.Behaviors.Add (new XmlSerializerOperationBehavior (od, xfa));
@@ -300,7 +301,7 @@ namespace System.ServiceModel.Description
 						    mi.GetCustomAttributes (typeof (ServiceKnownTypeAttribute), false)).Union (
 						    serviceMethod.GetCustomAttributes (typeof (ServiceKnownTypeAttribute), false));
 				foreach (ServiceKnownTypeAttribute a in knownTypeAtts)
-					foreach (Type t in a.GetTypes ())
+					foreach (Type t in a.GetTypes (givenServiceType))
 						od.KnownTypes.Add (t);
 				foreach (FaultContractAttribute a in mi.GetCustomAttributes (typeof (FaultContractAttribute), false)) {
 					var fname = a.Name ?? a.DetailType.Name + "Fault";

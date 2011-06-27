@@ -32,7 +32,11 @@ using System.ServiceModel;
 using System.ServiceModel.Channels;
 using System.ServiceModel.Configuration;
 using System.ServiceModel.Diagnostics;
+using System.Threading;
 using System.Xml;
+#if !MOONLIGHT
+using System.Xml.XPath;
+#endif
 
 namespace System.ServiceModel
 {
@@ -66,10 +70,43 @@ namespace System.ServiceModel
 		const string xmlns = "http://schemas.microsoft.com/2004/06/ServiceModel/Management/MessageTrace";
 		static MessageLoggingSettings settings = new MessageLoggingSettings ();
 		static int event_id;
+		static TextWriter log_writer = TextWriter.Null;
+		static XmlWriter xml_writer;
 #if !NET_2_1
 		static readonly TraceSource source = new TraceSource ("System.ServiceModel");
 		static readonly TraceSource message_source = new TraceSource ("System.ServiceModel.MessageLogging");
 #endif
+
+		static Logger ()
+		{
+			var env =
+				Environment.GetEnvironmentVariable ("MOON_WCF_TRACE") ??
+				Environment.GetEnvironmentVariable ("MONO_WCF_TRACE");
+
+			switch (env) {
+			case "stdout":
+				log_writer = Console.Out;
+				break;
+			case "stderr":
+				log_writer = Console.Error;
+				break;
+#if !NET_2_1
+			default:
+				try {
+					if (!String.IsNullOrEmpty (env))
+						log_writer = File.CreateText (env);
+				} catch (Exception ex) {
+					Console.Error.WriteLine ("WARNING: WCF trace environment variable points to non-creatable file name: " + env);
+				}
+				break;
+#endif
+			}
+			xml_writer = XmlWriter.Create (log_writer, new XmlWriterSettings () { OmitXmlDeclaration = true });
+
+#if !NET_2_1
+			message_source.Switch.Level = SourceLevels.Information;
+#endif
+		}
 
 		#region logger methods
 
@@ -102,11 +139,17 @@ namespace System.ServiceModel
 
 		static void Log (TraceEventType eventType, string message, params object [] args)
 		{
+			event_id++;
 #if NET_2_1
-			Console.Error.Write ("[{0}]", event_id++);
-			Console.Error.WriteLine (message, args);
-#else
-			source.TraceEvent (eventType, event_id++, message, args);
+			log_writer.Write ("[{0}] ", event_id);
+#endif
+			TraceCore (TraceEventType.Information, event_id,
+				false, Guid.Empty, // FIXME
+				message, args);
+			log_writer.WriteLine (message, args);
+			log_writer.Flush ();
+#if !NET_2_1
+			source.TraceEvent (eventType, event_id, message, args);
 #endif
 		}
 		
@@ -116,9 +159,11 @@ namespace System.ServiceModel
 		
 		static readonly XmlWriterSettings xws = new XmlWriterSettings () { OmitXmlDeclaration = true };
 		
-		public static void LogMessage (MessageLogSourceKind sourceKind, ref Message msg, int maxMessageSize)
+		public static void LogMessage (MessageLogSourceKind sourceKind, ref Message msg, long maxMessageSize)
 		{
-			var mb = msg.CreateBufferedCopy (maxMessageSize);
+			if (maxMessageSize > int.MaxValue)
+				throw new ArgumentOutOfRangeException ("maxMessageSize");
+			var mb = msg.CreateBufferedCopy ((int) maxMessageSize);
 			msg = mb.CreateMessage ();
 			LogMessage (new MessageLogTraceRecord (sourceKind, msg.GetType (), mb));
 		}
@@ -126,7 +171,12 @@ namespace System.ServiceModel
 		public static void LogMessage (MessageLogTraceRecord log)
 		{
 			var sw = new StringWriter ();
+#if NET_2_1
 			var xw = XmlWriter.Create (sw, xws);
+#else
+			var doc = new XmlDocument ();
+			var xw = doc.CreateNavigator ().AppendChild ();
+#endif
 			xw.WriteStartElement ("MessageLogTraceRecord", xmlns);
 			xw.WriteStartAttribute ("Time");
 			xw.WriteValue (log.Time);
@@ -135,14 +185,126 @@ namespace System.ServiceModel
 			xw.WriteAttributeString ("Type", log.Type.FullName);
 			log.Message.CreateMessage ().WriteMessage (xw);
 			xw.WriteEndElement ();
+			xw.Close ();
+
+			event_id++;
+
 #if NET_2_1
-			Console.Error.Write ("[{0}]", event_id++);
-			Console.Error.WriteLine (sw);
+			log_writer.Write ("[{0}] ", event_id);
+
+			TraceCore (TraceEventType.Information, event_id, /*FIXME*/false, /*FIXME*/Guid.Empty, sw);
 #else
-			message_source.TraceEvent (TraceEventType.Information, event_id++, sw.ToString ());
+			TraceCore (TraceEventType.Information, event_id, /*FIXME*/false, /*FIXME*/Guid.Empty, doc.CreateNavigator ());
+
+			message_source.TraceData (TraceEventType.Information, event_id, doc.CreateNavigator ());
 #endif
+
+			log_writer.Flush ();
 		}
 
+		#endregion
+
+		#region XmlWriterTraceListener compatibility
+		static void TraceCore (//TraceEventCache eventCache,
+			/*string source,*/ TraceEventType eventType, int id,
+			bool hasRelatedActivity, Guid relatedActivity,
+			/*int level, bool wrapData, */params object [] data)
+		{
+			string source = "mono(dummy)";
+			int level = 2;
+			bool wrapData = true;
+			var w = xml_writer;
+
+			w.WriteStartElement ("E2ETraceEvent", e2e_ns);
+
+			// <System>
+			w.WriteStartElement ("System", sys_ns);
+			w.WriteStartElement ("EventID", sys_ns);
+			w.WriteString (XmlConvert.ToString (id));
+			w.WriteEndElement ();
+			w.WriteStartElement ("Type", sys_ns);
+			// ...what to write here?
+			w.WriteString ("3");
+			w.WriteEndElement ();
+			w.WriteStartElement ("SubType", sys_ns);
+			// FIXME: it does not seem always to match eventType value ...
+			w.WriteAttributeString ("Name", eventType.ToString ());
+			// ...what to write here?
+			w.WriteString ("0");
+			w.WriteEndElement ();
+			// ...what to write here?
+			w.WriteStartElement ("Level", sys_ns);
+			w.WriteString (level.ToString ());
+			w.WriteEndElement ();
+			w.WriteStartElement ("TimeCreated", sys_ns);
+			w.WriteAttributeString ("SystemTime", XmlConvert.ToString (DateTime.Now, XmlDateTimeSerializationMode.RoundtripKind));
+			w.WriteEndElement ();
+			w.WriteStartElement ("Source", sys_ns);
+			w.WriteAttributeString ("Name", source);
+			w.WriteEndElement ();
+			w.WriteStartElement ("Correlation", sys_ns);
+			w.WriteAttributeString ("ActivityID", String.Concat ("{", Guid.Empty, "}"));
+			w.WriteEndElement ();
+			w.WriteStartElement ("Execution", sys_ns);
+			w.WriteAttributeString ("ProcessName", "mono (dummy)");
+			w.WriteAttributeString ("ProcessID", "0");
+			w.WriteAttributeString ("ThreadID", Thread.CurrentThread.ManagedThreadId.ToString ());
+			w.WriteEndElement ();
+			w.WriteStartElement ("Channel", sys_ns);
+			// ...what to write here?
+			w.WriteEndElement ();
+			w.WriteStartElement ("Computer");
+			w.WriteString ("localhost(dummy)");
+			w.WriteEndElement ();
+
+			w.WriteEndElement ();
+
+			// <ApplicationData>
+			w.WriteStartElement ("ApplicationData", e2e_ns);
+			w.WriteStartElement ("TraceData", e2e_ns);
+			foreach (object o in data) {
+				if (wrapData)
+					w.WriteStartElement ("DataItem", e2e_ns);
+#if MOONLIGHT
+				// in moonlight we don't have XPathNavigator, so just use raw string...
+				if (o != null)
+					w.WriteString (o.ToString ());
+#else
+				if (o is XPathNavigator)
+					// the output ignores xmlns difference between the parent (E2ETraceEvent and the content node).
+					// To clone such behavior, I took this approach.
+					w.WriteRaw (XPathNavigatorToString ((XPathNavigator) o));
+				else if (o != null)
+					w.WriteString (o.ToString ());
+#endif
+				if (wrapData)
+					w.WriteEndElement ();
+			}
+			w.WriteEndElement ();
+			w.WriteEndElement ();
+
+			w.WriteEndElement ();
+
+			w.Flush (); // for XmlWriter
+			log_writer.WriteLine ();
+			log_writer.Flush (); // for TextWriter
+		}
+
+		static readonly XmlWriterSettings xml_writer_settings = new XmlWriterSettings () { OmitXmlDeclaration = true };
+
+#if !MOONLIGHT
+		// I avoided OuterXml which includes indentation.
+		static string XPathNavigatorToString (XPathNavigator nav)
+		{
+			var sw = new StringWriter ();
+			using (var xw = XmlWriter.Create (sw, xml_writer_settings))
+				nav.WriteSubtree (xw);
+			return sw.ToString ();
+		}
+#endif
+
+		static readonly string e2e_ns = "http://schemas.microsoft.com/2004/06/E2ETraceEvent";
+		static readonly string sys_ns = "http://schemas.microsoft.com/2004/06/windows/eventlog/system";
 		#endregion
 	}
 }

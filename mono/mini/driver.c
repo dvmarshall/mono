@@ -1288,6 +1288,11 @@ mono_jit_parse_options (int argc, char * argv[])
  			mono_debugger_agent_parse_options (argv [i] + 17);
 			opt->mdb_optimizations = TRUE;
 			enable_debugging = TRUE;
+		} else if (!strcmp (argv [i], "--soft-breakpoints")) {
+			MonoDebugOptions *opt = mini_get_debug_options ();
+
+			opt->soft_breakpoints = TRUE;
+			opt->explicit_null_checks = TRUE;
 		} else {
 			fprintf (stderr, "Unsupported command line option: '%s'\n", argv [i]);
 			exit (1);
@@ -1359,11 +1364,6 @@ mono_main (int argc, char* argv[])
 
 	if (getenv ("MONO_NO_SMP"))
 		mono_set_use_smp (FALSE);
-
-#ifdef TARGET_ARM
-	// #683409
-	mono_set_use_smp (FALSE);
-#endif
 	
 	if (!g_thread_supported ())
 		g_thread_init (NULL);

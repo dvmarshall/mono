@@ -34,7 +34,7 @@ using System.ServiceModel;
 using System.Text;
 using System.Threading;
 
-namespace System.ServiceModel.Channels
+namespace System.ServiceModel.Channels.NetTcp
 {
 	internal class TcpReplyChannel : InternalReplyChannelBase
 	{
@@ -72,6 +72,9 @@ namespace System.ServiceModel.Channels
 			frame.ProcessPreambleAckRecipient ();
 
 			var msg = frame.ReadUnsizedMessage (timeout);
+
+			Logger.LogMessage (MessageLogSourceKind.TransportReceive, ref msg, info.BindingElement.MaxReceivedMessageSize);
+
 			// LAMESPEC: it contradicts the protocol explanation at section 3.1.1.1.1 in [MC-NMF].
 			// Moving ReadEndRecord() after context's WriteUnsizedMessage() causes TCP connection blocking.
 			frame.ReadEndRecord ();
@@ -105,6 +108,8 @@ namespace System.ServiceModel.Channels
 
 			public override void Reply (Message message, TimeSpan timeout)
 			{
+				Logger.LogMessage (MessageLogSourceKind.TransportSend, ref message, owner.info.BindingElement.MaxReceivedMessageSize);
+
 				DateTime start = DateTime.Now;
 				owner.frame.WriteUnsizedMessage (message, timeout);
 				// FIXME: consider timeout here too.

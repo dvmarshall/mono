@@ -564,6 +564,7 @@ decode_method_ref_with_target (MonoAotModule *module, MethodRef *ref, MonoMethod
 			int atype = decode_value (p, &p);
 
 			ref->method = mono_gc_get_managed_allocator_by_type (atype);
+			g_assert (ref->method);
 			break;
 		}
 		case MONO_WRAPPER_WRITE_BARRIER:
@@ -659,6 +660,8 @@ decode_method_ref_with_target (MonoAotModule *module, MethodRef *ref, MonoMethod
 
 			if (subtype == MONO_AOT_WRAPPER_CASTCLASS_WITH_CACHE)
 				ref->method = mono_marshal_get_castclass_with_cache ();
+			else if (subtype == MONO_AOT_WRAPPER_ISINST_WITH_CACHE)
+				ref->method = mono_marshal_get_isinst_with_cache ();
 			else
 				g_assert_not_reached ();
 			break;

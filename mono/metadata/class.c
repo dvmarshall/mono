@@ -901,7 +901,16 @@ mono_class_inflate_generic_method_full_checked (MonoMethod *method, MonoClass *k
 		method = imethod->declaring;
 	}
 
-	if (!method->is_generic && !method->klass->generic_container)
+	/*
+	 * A method only needs to be inflated if the context has argument for which it is
+	 * parametric. Eg:
+	 * 
+	 * class Foo<T> { void Bar(); } - doesn't need to be inflated if only mvars' are supplied
+	 * class Foo { void Bar<T> (); } - doesn't need to be if only vars' are supplied
+	 * 
+	 */
+	if (!((method->is_generic && context->method_inst) || 
+		(method->klass->generic_container && context->class_inst)))
 		return method;
 
 	/*
@@ -7299,8 +7308,20 @@ mono_class_is_assignable_from (MonoClass *klass, MonoClass *oklass)
 		return klass == oklass;
 
 	if (MONO_CLASS_IS_INTERFACE (klass)) {
-		if ((oklass->byval_arg.type == MONO_TYPE_VAR) || (oklass->byval_arg.type == MONO_TYPE_MVAR))
+		if ((oklass->byval_arg.type == MONO_TYPE_VAR) || (oklass->byval_arg.type == MONO_TYPE_MVAR)) {
+			MonoGenericParam *gparam = oklass->byval_arg.data.generic_param;
+			MonoClass **constraints = mono_generic_container_get_param_info (gparam->owner, gparam->num)->constraints;
+			int i;
+
+			if (constraints) {
+				for (i = 0; constraints [i]; ++i) {
+					if (mono_class_is_assignable_from (klass, constraints [i]))
+						return TRUE;
+				}
+			}
+
 			return FALSE;
+		}
 
 		/* interface_offsets might not be set for dynamic classes */
 		if (oklass->ref_info_handle && !oklass->interface_bitmap)

@@ -9,7 +9,7 @@
 //
 // Copyright (C) 2001, 2002 Phillip Pearson and Ximian, Inc.
 //    http://www.myelin.co.nz
-// (c) 2004-2006 Novell, Inc. (http://www.novell.com)
+// (c) 2004-2011 Novell, Inc. (http://www.novell.com)
 //
 
 //
@@ -665,52 +665,6 @@ namespace System.Net.Sockets
 			return(req);
 		}
 
-		public IAsyncResult BeginConnect(EndPoint end_point,
-						 AsyncCallback callback,
-						 object state) {
-
-			if (disposed && closed)
-				throw new ObjectDisposedException (GetType ().ToString ());
-
-			if (end_point == null)
-				throw new ArgumentNullException ("end_point");
-
-			SocketAsyncResult req = new SocketAsyncResult (this, state, callback, SocketOperation.Connect);
-			req.EndPoint = end_point;
-
-			// Bug #75154: Connect() should not succeed for .Any addresses.
-			if (end_point is IPEndPoint) {
-				IPEndPoint ep = (IPEndPoint) end_point;
-				if (ep.Address.Equals (IPAddress.Any) || ep.Address.Equals (IPAddress.IPv6Any)) {
-					req.Complete (new SocketException ((int) SocketError.AddressNotAvailable), true);
-					return req;
-				}
-			}
-
-			int error = 0;
-			if (!blocking) {
-				SocketAddress serial = end_point.Serialize ();
-				Connect_internal (socket, serial, out error);
-				if (error == 0) {
-					// succeeded synch
-					connected = true;
-					req.Complete (true);
-				} else if (error != (int) SocketError.InProgress && error != (int) SocketError.WouldBlock) {
-					// error synch
-					connected = false;
-					req.Complete (new SocketException (error), true);
-				}
-			}
-
-			if (blocking || error == (int) SocketError.InProgress || error == (int) SocketError.WouldBlock) {
-				// continue asynch
-				connected = false;
-				socket_pool_queue (Worker.Dispatcher, req);
-			}
-
-			return(req);
-		}
-
 		public IAsyncResult BeginConnect (IPAddress address, int port,
 						  AsyncCallback callback,
 						  object state)
@@ -724,37 +678,14 @@ namespace System.Net.Sockets
 			if (address.ToString ().Length == 0)
 				throw new ArgumentException ("The length of the IP address is zero");
 
+			if (port <= 0 || port > 65535)
+				throw new ArgumentOutOfRangeException ("port", "Must be > 0 and < 65536");
+
 			if (islistening)
 				throw new InvalidOperationException ();
 
 			IPEndPoint iep = new IPEndPoint (address, port);
 			return(BeginConnect (iep, callback, state));
-		}
-
-		public IAsyncResult BeginConnect (IPAddress[] addresses,
-						  int port,
-						  AsyncCallback callback,
-						  object state)
-		{
-			if (disposed && closed)
-				throw new ObjectDisposedException (GetType ().ToString ());
-
-			if (addresses == null)
-				throw new ArgumentNullException ("addresses");
-
-			if (this.AddressFamily != AddressFamily.InterNetwork &&
-				this.AddressFamily != AddressFamily.InterNetworkV6)
-				throw new NotSupportedException ("This method is only valid for addresses in the InterNetwork or InterNetworkV6 families");
-
-			if (islistening)
-				throw new InvalidOperationException ();
-
-			SocketAsyncResult req = new SocketAsyncResult (this, state, callback, SocketOperation.Connect);
-			req.Addresses = addresses;
-			req.Port = port;
-			connected = false;
-			socket_pool_queue (Worker.Dispatcher, req);
-			return(req);
 		}
 
 		public IAsyncResult BeginConnect (string host, int port,
@@ -771,11 +702,13 @@ namespace System.Net.Sockets
 				address_family != AddressFamily.InterNetworkV6)
 				throw new NotSupportedException ("This method is valid only for sockets in the InterNetwork and InterNetworkV6 families");
 
+			if (port <= 0 || port > 65535)
+				throw new ArgumentOutOfRangeException ("port", "Must be > 0 and < 65536");
+
 			if (islistening)
 				throw new InvalidOperationException ();
 
-			IPAddress [] addresses = Dns.GetHostAddresses (host);
-			return (BeginConnect (addresses, port, callback, state));
+			return BeginConnect (Dns.GetHostAddresses (host), port, callback, state);
 		}
 
 		public IAsyncResult BeginDisconnect (bool reuseSocket,
@@ -1175,27 +1108,6 @@ namespace System.Net.Sockets
 			seed_endpoint = local_end;
 		}
 
-#if !MOONLIGHT
-		public bool ConnectAsync (SocketAsyncEventArgs e)
-		{
-			// NO check is made whether e != null in MS.NET (NRE is thrown in such case)
-			
-			if (disposed && closed)
-				throw new ObjectDisposedException (GetType ().ToString ());
-			if (islistening)
-				throw new InvalidOperationException ("You may not perform this operation after calling the Listen method.");
-			if (e.RemoteEndPoint == null)
-				throw new ArgumentNullException ("remoteEP", "Value cannot be null.");
-			if (e.BufferList != null)
-				throw new ArgumentException ("Multiple buffers cannot be used with this method.");
-
-			e.DoOperation (SocketAsyncOperation.Connect, this);
-
-			// We always return true for now
-			return true;
-		}
-#endif
-		
 		public void Connect (IPAddress address, int port)
 		{
 			Connect (new IPEndPoint (address, port));

@@ -9,10 +9,13 @@ using System.ServiceModel.MonoInternal;
 
 namespace System.ServiceModel.Dispatcher
 {
+	// Its lifetime is per-call.
+	// ServiceRuntimeChannel's lifetime is per-session.
 	internal class InputOrReplyRequestProcessor : BaseRequestProcessor
 	{
 		DispatchRuntime dispatch_runtime;
 		IChannel reply_or_input;
+		IContextChannel context_channel;
 
 		public InputOrReplyRequestProcessor (DispatchRuntime runtime, IChannel replyOrInput)
 		{
@@ -41,14 +44,14 @@ namespace System.ServiceModel.Dispatcher
 		public void ProcessInput (Message message)
 		{
 			OperationContext opcx = CreateOperationContext (message);
-			ProcessRequest (new MessageProcessingContext (opcx));
+			ProcessRequest (new MessageProcessingContext (opcx, reply_or_input));
 		}
 
 		public void ProcessReply (RequestContext rc)
 		{
 			OperationContext opcx = CreateOperationContext (rc.RequestMessage);
 			opcx.RequestContext = rc;
-			ProcessRequest (new MessageProcessingContext (opcx));
+			ProcessRequest (new MessageProcessingContext (opcx, reply_or_input));
 		}
 
 		OperationContext CreateOperationContext (Message incoming)
@@ -68,6 +71,7 @@ namespace System.ServiceModel.Dispatcher
 			OperationContext opCtx = new OperationContext (contextChannel);
 			opCtx.IncomingMessage = incoming;
 			opCtx.EndpointDispatcher = dispatch_runtime.EndpointDispatcher;
+			context_channel = contextChannel;
 			return opCtx;
 		}
 	}
