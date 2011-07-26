@@ -177,6 +177,7 @@ case "$host" in
 		host_win32=no
 		platform_android=yes
 		AC_DEFINE(PLATFORM_ANDROID,1,[Targeting the Android platform])
+		AC_DEFINE(TARGET_ANDROID,1,[Targeting the Android platform])
 
 		CPPFLAGS="$CPPFLAGS -DGC_LINUX_THREADS -D_GNU_SOURCE -D_REENTRANT -DUSE_MMAP"
 		if test "x$disable_munmap" != "xyes"; then
@@ -283,12 +284,12 @@ case "$host" in
 		if test "x$cross_compiling" = "xyes"; then
 			has_broken_apple_cpp=yes
 		fi
-		dnl Snow Leopard is horribly broken -- it reports itself as i386-apple-darwin10.0.0, but
+		dnl Snow Leopard is horribly broken -- it reports itself as i386-apple-darwin*, but
 		dnl its gcc defaults to 64-bit mode.  They have also deprecated the usage of ucontext
 		dnl we need to set some flags to build our 32-bit binaries on 10.6 properly
 		case "$host" in
-			dnl Snow Leopard config.guess reports as this
-			i*86-*-darwin10*)
+			dnl Snow Leopard and newer config.guess reports as this
+			i*86-*-darwin*)
 				BROKEN_DARWIN_FLAGS="-arch i386 -D_XOPEN_SOURCE -mmacosx-version-min=10.5"
 				CPPFLAGS="$CPPFLAGS $BROKEN_DARWIN_FLAGS"
 				CFLAGS="$CFLAGS $BROKEN_DARWIN_FLAGS"
@@ -488,6 +489,7 @@ if test x"$GCC" = xyes; then
 						   void main () { }
 		], [
 		   AC_MSG_RESULT(yes)
+		   CFLAGS="$ORIG_CFLAGS -Wno-unused-but-set-variable"
 		], [
 		   AC_MSG_RESULT(no)
 		   CFLAGS=$ORIG_CFLAGS
@@ -706,7 +708,7 @@ DISABLED_FEATURES=none
 
 AC_ARG_ENABLE(minimal, [  --enable-minimal=LIST      drop support for LIST subsystems.
      LIST is a comma-separated list from: aot, profiler, decimal, pinvoke, debug,
-     reflection_emit, reflection_emit_save, large_code, logging, com, ssa, generics, attach, jit, simd, soft_debug, normalization, assembly_remapping.],
+     reflection_emit, reflection_emit_save, large_code, logging, com, ssa, generics, attach, jit, simd, soft_debug, normalization, assembly_remapping, shared_perfcounters.],
 [
 	for feature in `echo "$enable_minimal" | sed -e "s/,/ /g"`; do
 		eval "mono_feature_disable_$feature='yes'"
@@ -829,6 +831,11 @@ fi
 if test "x$mono_feature_disable_assembly_remapping" = "xyes"; then
 	AC_DEFINE(DISABLE_ASSEMBLY_REMAPPING, 1, [Disable assembly remapping.])
 	AC_MSG_NOTICE([Disabled Assembly remapping.])
+fi
+
+if test "x$mono_feature_disable_shared_perfcounters" = "xyes"; then
+	AC_DEFINE(DISABLE_SHARED_PERFCOUNTERS, 1, [Disable shared perfcounters.])
+	AC_MSG_NOTICE([Disabled Shared perfcounters.])
 fi
 
 AC_MSG_CHECKING(for visibility __attribute__)
@@ -2356,12 +2363,12 @@ case "$host" in
 esac
 
 if test "x$host" != "x$target"; then
+   AC_DEFINE(MONO_CROSS_COMPILE,1,[The runtime is compiled for cross-compiling mode])
    case "$target" in
    powerpc64-ps3-linux-gnu)
 		TARGET=POWERPC64
 		arch_target=powerpc64
 		AC_DEFINE(TARGET_PS3, 1, [...])
-		AC_DEFINE(MONO_CROSS_COMPILE,1,[The runtime is compiled for cross-compiling mode])
 		# It would be better to just use TARGET_POWERPC64, but lots of code already
 		# uses this define
 		AC_DEFINE(__mono_ppc64__, 1, [...])
@@ -2374,7 +2381,6 @@ if test "x$host" != "x$target"; then
 		TARGET=POWERPC64
 		arch_target=powerpc64
 		AC_DEFINE(TARGET_XBOX360, 1, [...])
-		AC_DEFINE(MONO_CROSS_COMPILE,1,[The runtime is compiled for cross-compiling mode])
 		# It would be better to just use TARGET_POWERPC64, but lots of code already
 		# uses this define
 		sizeof_register=8
@@ -2384,12 +2390,49 @@ if test "x$host" != "x$target"; then
 		TARGET=AMD64
 		arch_target=amd64
 		AC_DEFINE(TARGET_AMD64, 1, [...])
-		AC_DEFINE(MONO_CROSS_COMPILE,1,[The runtime is compiled for cross-compiling mode])
 		AC_DEFINE(__mono_ilp32__, 1, [64 bit mode with 4 byte longs and pointers])
 		sizeof_register=8
 		;;
+   armv7l-unknown-linux-gnueabi*)
+		# TEGRA
+		TARGET=ARM;
+		arch_target=arm;
+		AC_DEFINE(TARGET_ARM, 1, [...])
+		ACCESS_UNALIGNED="no"
+		JIT_SUPPORTED=yes
+		CPPFLAGS="$CPPFLAGS -DARM_FPU_VFP=1 -D__ARM_EABI__"
+		jit_wanted=true
+		# Can't use tls, since it depends on the runtime detection of tls offsets
+		# in mono-compiler.h
+		with_tls=pthread
+		;;
+   armv5tel-unknown-linux-gnueabi*)
+		TARGET=ARM;
+		arch_target=arm;
+		AC_DEFINE(TARGET_ARM, 1, [...])
+		ACCESS_UNALIGNED="no"
+		JIT_SUPPORTED=yes
+		CPPFLAGS="$CPPFLAGS -D__ARM_EABI__"
+		jit_wanted=true
+		# Can't use tls, since it depends on the runtime detection of tls offsets
+		# in mono-compiler.h
+		with_tls=pthread
+		;;
+   armv5-*-linux-androideabi*)
+		TARGET=ARM;
+		arch_target=arm;
+		AC_DEFINE(TARGET_ARM, 1, [...])
+		AC_DEFINE(TARGET_ANDROID, 1, [...])
+		ACCESS_UNALIGNED="no"
+		JIT_SUPPORTED=yes
+		CPPFLAGS="$CPPFLAGS -D__ARM_EABI__ -DARM_FPU_NONE=1"
+		jit_wanted=true
+		# Can't use tls, since it depends on the runtime detection of tls offset
+		# in mono-compiler.h
+		with_tls=pthread
+		;;
 	*)
-		AC_MSG_WARN([Cross compiling is only supported for targets matching 'powerpc64-{ps3,xbox360}-linux-gnu'])
+		AC_MSG_ERROR([Cross compiling is not supported for target $target])
 	esac
 fi
 
