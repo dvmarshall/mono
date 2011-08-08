@@ -16,6 +16,10 @@ rm $INSTALLDIR/lib/mono/2.0/nunit* $INSTALLDIR/lib/mono/3.5/nunit*  $INSTALLDIR/
 
 cp $ALBION_THIRDPARTY/mono_install_$PLAT/bin/nant $INSTALLDIR/bin/
 
+cp $ALBION_THIRDPARTY/mono_install_$PLAT/lib/mono/2.0/Microsoft.JScript.dll $INSTALLDIR/lib/mono/2.0/
+cp -R $ALBION_THIRDPARTY/mono_install_$PLAT/lib/mono/gac/Microsoft.JScript $INSTALLDIR/lib/mono/gac/
+
+
 rm -rf $INSTALLDIR/man
 
 
