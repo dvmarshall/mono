@@ -1,4 +1,3 @@
-#if NET_4_0
 // 
 // TaskCompletionSourceTests.cs
 //  
@@ -24,6 +23,8 @@
 // LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
+
+#if NET_4_0
 
 using System;
 using System.Threading;
@@ -96,6 +97,24 @@ namespace MonoTests.System.Threading.Tasks
 			Assert.IsFalse (completionSource.TrySetCanceled (), "#8");
 			Assert.AreEqual (TaskStatus.Faulted, completionSource.Task.Status, "#9");
 		}
+
+		[Test]
+		public void SetExceptionInvalid ()
+		{
+			try {
+				completionSource.TrySetException (new ApplicationException[0]);
+				Assert.Fail ("#1");
+			} catch (ArgumentException) {
+			}
+
+			try {
+				completionSource.TrySetException (new [] { new ApplicationException (), null });
+				Assert.Fail ("#2");
+			} catch (ArgumentException) {
+			}
+
+			Assert.AreEqual (TaskStatus.WaitingForActivation, completionSource.Task.Status, "r1");
+		}
 		
 		[Test, ExpectedException (typeof (InvalidOperationException))]
 		public void SetResultExceptionTest ()
@@ -119,6 +138,48 @@ namespace MonoTests.System.Threading.Tasks
 			Assert.AreEqual (TaskStatus.RanToCompletion, completionSource.Task.Status, "#1");
 			Assert.AreEqual (TaskStatus.RanToCompletion, t.Status, "#2");
 			Assert.IsTrue (result);
+		}
+
+		[Test]
+		public void FaultedFutureTest ()
+		{
+			var thrown = new ApplicationException ();
+			var source = new TaskCompletionSource<int> ();
+			source.TrySetException (thrown);
+			var f = source.Task;
+			AggregateException ex = null;
+			try {
+				f.Wait ();
+			} catch (AggregateException e) {
+				ex = e;
+			}
+
+			Assert.IsNotNull (ex);
+			Assert.AreEqual (thrown, ex.InnerException);
+			Assert.AreEqual (thrown, f.Exception.InnerException);
+			Assert.AreEqual (TaskStatus.Faulted, f.Status);
+
+			ex = null;
+			try {
+				var result = f.Result;
+			} catch (AggregateException e) {
+				ex = e;
+			}
+
+			Assert.IsNotNull (ex);
+			Assert.AreEqual (TaskStatus.Faulted, f.Status);
+			Assert.AreEqual (thrown, f.Exception.InnerException);
+			Assert.AreEqual (thrown, ex.InnerException);
+		}
+
+		[Test]
+		public void WaitingTest ()
+		{
+			var tcs = new TaskCompletionSource<int> ();
+			var task = tcs.Task;
+			bool result = task.Wait (50);
+
+			Assert.IsFalse (result);
 		}
 	}
 }

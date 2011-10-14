@@ -10,6 +10,8 @@
  *   Zoltan Varga (vargaz@gmail.com)
  *
  * (C) 2003 Ximian, Inc.
+ * Copyright 2003-2011 Novell, Inc (http://www.novell.com)
+ * Copyright 2011 Xamarin, Inc (http://www.xamarin.com)
  */
 #include "mini.h"
 #include <string.h>
@@ -4546,7 +4548,7 @@ mono_arch_output_basic_block (MonoCompile *cfg, MonoBasicBlock *bb)
 
 			/* FIXME: no tracing support... */
 			if (cfg->prof_options & MONO_PROFILE_ENTER_LEAVE)
-				code = mono_arch_instrument_epilog_full (cfg, mono_profiler_method_leave, code, FALSE, FALSE);
+				code = mono_arch_instrument_epilog_full (cfg, mono_profiler_method_leave, code, FALSE, TRUE);
 
 			g_assert (!cfg->method->save_lmf);
 
@@ -5500,6 +5502,7 @@ mono_arch_output_basic_block (MonoCompile *cfg, MonoBasicBlock *bb)
 
 			gpointer card_table = mono_gc_get_card_table (&card_table_shift, &card_table_mask);
 			guint64 nursery_start = (guint64)mono_gc_get_nursery (&nursery_shift, &nursery_size);
+			guint64 shifted_nursery_start = nursery_start >> nursery_shift;
 
 			/*If either point to the stack we can simply avoid the WB. This happens due to
 			 * optimizations revealing a stack store that was not visible when op_cardtable was emited.
@@ -5532,7 +5535,19 @@ mono_arch_output_basic_block (MonoCompile *cfg, MonoBasicBlock *bb)
 			if (value != AMD64_RDX)
 				amd64_mov_reg_reg (code, AMD64_RDX, value, 8);
 			amd64_shift_reg_imm (code, X86_SHR, AMD64_RDX, nursery_shift);
-			amd64_alu_reg_imm (code, X86_CMP, AMD64_RDX, nursery_start >> nursery_shift);
+			if (shifted_nursery_start >> 31) {
+				/*
+				 * The value we need to compare against is 64 bits, so we need
+				 * another spare register.  We use RBX, which we save and
+				 * restore.
+				 */
+				amd64_mov_membase_reg (code, AMD64_RSP, -8, AMD64_RBX, 8);
+				amd64_mov_reg_imm (code, AMD64_RBX, shifted_nursery_start);
+				amd64_alu_reg_reg (code, X86_CMP, AMD64_RDX, AMD64_RBX);
+				amd64_mov_reg_membase (code, AMD64_RBX, AMD64_RSP, -8, 8);
+			} else {
+				amd64_alu_reg_imm (code, X86_CMP, AMD64_RDX, shifted_nursery_start);
+			}
 			br = code; x86_branch8 (code, X86_CC_NE, -1, FALSE);
 			amd64_mov_reg_reg (code, AMD64_RDX, ptr, 8);
 			amd64_shift_reg_imm (code, X86_SHR, AMD64_RDX, card_table_shift);
@@ -7444,6 +7459,7 @@ mono_arch_instrument_epilog_full (MonoCompile *cfg, void *func, void *p, gboolea
 	int save_mode = SAVE_NONE;
 	MonoMethod *method = cfg->method;
 	MonoType *ret_type = mini_type_get_underlying_type (NULL, mono_method_signature (method)->ret);
+	int i;
 	
 	switch (ret_type->type) {
 	case MONO_TYPE_VOID:
@@ -7512,8 +7528,8 @@ mono_arch_instrument_epilog_full (MonoCompile *cfg, void *func, void *p, gboolea
 		amd64_mov_reg_imm (code, AMD64_RAX, 0);
 
 	if (preserve_argument_registers) {
-		amd64_push_reg (code, MONO_AMD64_ARG_REG1);
-		amd64_push_reg (code, MONO_AMD64_ARG_REG2);
+		for (i = 0; i < PARAM_REGS; ++i)
+			amd64_push_reg (code, param_regs [i]);
 	}
 
 	mono_add_patch_info (cfg, code-cfg->native_code, MONO_PATCH_INFO_METHODCONST, method);
@@ -7521,8 +7537,8 @@ mono_arch_instrument_epilog_full (MonoCompile *cfg, void *func, void *p, gboolea
 	code = emit_call (cfg, code, MONO_PATCH_INFO_ABS, (gpointer)func, TRUE);
 
 	if (preserve_argument_registers) {
-		amd64_pop_reg (code, MONO_AMD64_ARG_REG2);
-		amd64_pop_reg (code, MONO_AMD64_ARG_REG1);
+		for (i = PARAM_REGS - 1; i >= 0; --i)
+			amd64_pop_reg (code, param_regs [i]);
 	}
 
 	/* Restore result */

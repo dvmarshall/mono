@@ -96,6 +96,10 @@ struct _SgenThreadInfo {
 	thread_port_t mach_port;
 #endif
 	
+#if defined(PLATFORM_ANDROID)
+	void *android_tid;
+#endif
+
 	unsigned int stop_count; /* to catch duplicate signals */
 	int signal;
 	int skip;
@@ -593,6 +597,7 @@ int mono_sgen_thread_handshake (int signum) MONO_INTERNAL;
 SgenThreadInfo* mono_sgen_thread_info_lookup (ARCH_THREAD_TYPE id) MONO_INTERNAL;
 SgenThreadInfo** mono_sgen_get_thread_table (void) MONO_INTERNAL;
 gboolean mono_sgen_suspend_thread (SgenThreadInfo *info) MONO_INTERNAL;
+int mono_sgen_pthread_kill (SgenThreadInfo *info, int signum) MONO_INTERNAL;
 
 
 void mono_sgen_wait_for_suspend_ack (int count) MONO_INTERNAL;
@@ -781,14 +786,26 @@ mono_sgen_par_object_get_size (MonoVTable *vtable, MonoObject* o)
 	}
 }
 
-#define mono_sgen_safe_object_get_size(o)		mono_sgen_par_object_get_size ((MonoVTable*)SGEN_LOAD_VTABLE ((o)), (o))
+static inline guint
+mono_sgen_safe_object_get_size (MonoObject *obj)
+{
+       char *forwarded;
+
+       if ((forwarded = SGEN_OBJECT_IS_FORWARDED (obj)))
+               obj = (MonoObject*)forwarded;
+
+       return mono_sgen_par_object_get_size ((MonoVTable*)SGEN_LOAD_VTABLE (obj), obj);
+}
 
 const char* mono_sgen_safe_name (void* obj) MONO_INTERNAL;
 
 gboolean mono_sgen_object_is_live (void *obj) MONO_INTERNAL;
 
 gboolean mono_sgen_need_bridge_processing (void) MONO_INTERNAL;
-void mono_sgen_bridge_processing (int num_objs, MonoObject **objs) MONO_INTERNAL;
+void mono_sgen_bridge_processing_start (int num_objs, MonoObject **objs) MONO_INTERNAL;
+void mono_sgen_bridge_processing_finish (int num_objs, MonoObject **objs) MONO_INTERNAL;
+gboolean mono_sgen_is_bridge_object (MonoObject *obj) MONO_INTERNAL;
+void mono_sgen_mark_bridge_object (MonoObject *obj) MONO_INTERNAL;
 
 enum {
 	SPACE_MAJOR,
@@ -816,7 +833,6 @@ struct _LOSObject {
 
 extern LOSObject *los_object_list;
 extern mword los_memory_usage;
-extern mword last_los_memory_usage;
 
 void mono_sgen_los_free_object (LOSObject *obj) MONO_INTERNAL;
 void* mono_sgen_los_alloc_large_inner (MonoVTable *vtable, size_t size) MONO_INTERNAL;

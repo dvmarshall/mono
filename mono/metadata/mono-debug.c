@@ -6,6 +6,7 @@
  *
  * Copyright 2001-2003 Ximian, Inc (http://www.ximian.com)
  * Copyright 2004-2009 Novell, Inc (http://www.novell.com)
+ * Copyright 2011 Xamarin, Inc (http://www.xamarin.com)
  */
 
 #include <config.h>
@@ -278,6 +279,9 @@ _mono_debug_init_corlib (MonoDomain *domain)
 void
 mono_debug_open_image_from_memory (MonoImage *image, const guint8 *raw_contents, int size)
 {
+	if (!mono_debug_initialized)
+		return;
+
 	mono_debug_open_image (image, raw_contents, size);
 }
 

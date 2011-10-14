@@ -1,4 +1,4 @@
-#if NET_4_0
+//
 // TaskTest.cs
 //
 // Copyright (c) 2008 Jérémie "Garuma" Laval
@@ -22,6 +22,8 @@
 // THE SOFTWARE.
 //
 //
+
+#if NET_4_0
 
 using System;
 using System.Threading;
@@ -116,6 +118,15 @@ namespace MonoTests.System.Threading.Tasks
 			AggregateException aggr = (AggregateException)ex;
 			Assert.AreEqual (1, aggr.InnerExceptions.Count, "#4");
 			Assert.IsInstanceOfType (typeof (OperationCanceledException), aggr.InnerExceptions[0], "#5");
+		}
+
+		[Test, ExpectedException (typeof (InvalidOperationException))]
+		public void CreationWhileInitiallyCanceled ()
+		{
+			var token = new CancellationToken (true);
+			var task = new Task (() => { }, token);
+			Assert.AreEqual (TaskStatus.Canceled, task.Status);
+			task.Start ();
 		}
 		
 		[Test]
@@ -275,6 +286,63 @@ namespace MonoTests.System.Threading.Tasks
 			t.RunSynchronously ();
 
 			Assert.AreEqual (1, val);
+		}
+
+		[Test]
+		public void RunSynchronouslyArgumentChecks ()
+		{
+			Task t = new Task (() => { });
+			try {
+				t.RunSynchronously (null);
+				Assert.Fail ("#1");
+			} catch (ArgumentNullException) {
+			}
+		}
+
+		[Test]
+		public void UnobservedExceptionOnFinalizerThreadTest ()
+		{
+			bool wasCalled = false;
+			TaskScheduler.UnobservedTaskException += (o, args) => {
+				wasCalled = true;
+				args.SetObserved ();
+			};
+			var inner = new ApplicationException ();
+			Task.Factory.StartNew (() => { throw inner; });
+			Thread.Sleep (1000);
+			GC.Collect ();
+			Thread.Sleep (1000);
+			GC.WaitForPendingFinalizers ();
+
+			Assert.IsTrue (wasCalled);
+		}
+
+		[Test, ExpectedException (typeof (InvalidOperationException))]
+		public void StartFinishedTaskTest ()
+		{
+			var t = Task.Factory.StartNew (delegate () { });
+			t.Wait ();
+
+			t.Start ();
+		}
+
+		[Test, ExpectedException (typeof (InvalidOperationException))]
+		public void DisposeUnstartedTest ()
+		{
+			var t = new Task (() => { });
+			t.Dispose ();
+		}
+
+		[Test]
+		public void ThrowingUnrelatedCanceledExceptionTest ()
+		{
+			Task t = new Task (() => {
+				throw new TaskCanceledException ();
+			});
+
+			t.RunSynchronously ();
+			Assert.IsTrue (t.IsFaulted);
+			Assert.IsFalse (t.IsCanceled);
 		}
 	}
 }

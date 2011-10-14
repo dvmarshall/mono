@@ -300,11 +300,15 @@ namespace System.ServiceModel.Dispatcher
 						((PropertyInfo) mi).SetValue (msgObject, pair.Value, null);
 				}
 
-			foreach (MessagePartDescription partDesc in md.Body.Parts)
+			var l = new List<MessagePartDescription> (md.Body.Parts);
+			if (md.Body.ReturnValue != null)
+				l.Add (md.Body.ReturnValue);
+			foreach (MessagePartDescription partDesc in l)
 				if (partDesc.MemberInfo is FieldInfo)
 					((FieldInfo) partDesc.MemberInfo).SetValue (msgObject, parts [partDesc.Index]);
-				else
+				else if (partDesc.MemberInfo is PropertyInfo)
 					((PropertyInfo) partDesc.MemberInfo).SetValue (msgObject, parts [partDesc.Index], null);
+				// otherwise, it could be null (in case of undefined return value in MessageContract)
 		}
 
 		void MessageObjectToParts (MessageDescription md, object msgObject, Dictionary<MessageHeaderDescription,object> headers, object [] parts)
@@ -317,7 +321,10 @@ namespace System.ServiceModel.Dispatcher
 					headers [headDesc] = ((PropertyInfo) mi).GetValue (msgObject, null);
 			}
 
-			foreach (MessagePartDescription partDesc in md.Body.Parts)
+			var l = new List<MessagePartDescription> (md.Body.Parts);
+			if (md.Body.ReturnValue != null)
+				l.Add (md.Body.ReturnValue);
+			foreach (MessagePartDescription partDesc in l)
 				if (partDesc.MemberInfo is FieldInfo)
 					parts [partDesc.Index] = ((FieldInfo) partDesc.MemberInfo).GetValue (msgObject);
 				else

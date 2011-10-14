@@ -1,10 +1,12 @@
 // 
 // TaskCompletionSource.cs
 //  
-// Author:
+// Authors:
 //       Jérémie "Garuma" Laval <jeremie.laval@gmail.com>
+//       Marek Safar <marek.safar@gmail.com>
 // 
 // Copyright (c) 2009 Jérémie "Garuma" Laval
+// Copyright 2011 Xamarin, Inc (http://www.xamarin.com)
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -32,29 +34,32 @@ namespace System.Threading.Tasks
 {
 	public class TaskCompletionSource<TResult>
 	{
-		Task<TResult> source;
+		static readonly Func<TResult> emptyFunction = () => default (TResult);
+		static readonly Func<object, TResult> emptyParamFunction = (_) => default (TResult);
+		readonly Task<TResult> source;
+		SpinLock opLock = new SpinLock (false);
 
 		public TaskCompletionSource ()
 		{
-			source = new Task<TResult> (null);
+			source = new Task<TResult> (emptyFunction);
 			source.SetupScheduler (TaskScheduler.Current);
 		}
 		
 		public TaskCompletionSource (object state)
 		{
-			source = new Task<TResult> (null, state);
+			source = new Task<TResult> (emptyParamFunction, state);
 			source.SetupScheduler (TaskScheduler.Current);
 		}
 		
 		public TaskCompletionSource (TaskCreationOptions creationOptions)
 		{
-			source = new Task<TResult> (null, creationOptions);
+			source = new Task<TResult> (emptyFunction, creationOptions);
 			source.SetupScheduler (TaskScheduler.Current);
 		}
 		
 		public TaskCompletionSource (object state, TaskCreationOptions creationOptions)
 		{
-			source = new Task<TResult> (null, state, creationOptions);
+			source = new Task<TResult> (emptyParamFunction, state, creationOptions);
 			source.SetupScheduler (TaskScheduler.Current);
 		}
 		
@@ -63,15 +68,18 @@ namespace System.Threading.Tasks
 			if (!ApplyOperation (source.CancelReal))
 				ThrowInvalidException ();
 		}
-		
+
 		public void SetException (Exception exception)
 		{
+			if (exception == null)
+				throw new ArgumentNullException ("exception");
+
 			SetException (new Exception[] { exception });
 		}
-		
+
 		public void SetException (IEnumerable<Exception> exceptions)
 		{
-			if (!ApplyOperation (() => source.HandleGenericException (new AggregateException (exceptions))))
+			if (!TrySetException (exceptions))
 				ThrowInvalidException ();
 		}
 		
@@ -81,7 +89,7 @@ namespace System.Threading.Tasks
 				ThrowInvalidException ();
 		}
 				
-		void ThrowInvalidException ()
+		static void ThrowInvalidException ()
 		{
 			throw new InvalidOperationException ("The underlying Task is already in one of the three final states: RanToCompletion, Faulted, or Canceled.");
 		}
@@ -93,12 +101,22 @@ namespace System.Threading.Tasks
 		
 		public bool TrySetException (Exception exception)
 		{
+			if (exception == null)
+				throw new ArgumentNullException ("exception");
+
 			return TrySetException (new Exception[] { exception });
 		}
 		
 		public bool TrySetException (IEnumerable<Exception> exceptions)
 		{
-			return ApplyOperation (() => source.HandleGenericException (new AggregateException (exceptions)));
+			if (exceptions == null)
+				throw new ArgumentNullException ("exceptions");
+
+			var aggregate = new AggregateException (exceptions);
+			if (aggregate.InnerExceptions.Count == 0)
+				throw new ArgumentNullException ("exceptions");
+
+			return ApplyOperation (() => source.HandleGenericException (aggregate));
 		}
 		
 		public bool TrySetResult (TResult result)
@@ -108,17 +126,24 @@ namespace System.Threading.Tasks
 				
 		bool ApplyOperation (Action action)
 		{
-			if (CheckInvalidState ())
-				return false;
+			bool taken = false;
+			try {
+				opLock.Enter (ref taken);
+				if (CheckInvalidState ())
+					return false;
 			
-			source.Status = TaskStatus.Running;
+				source.Status = TaskStatus.Running;
 
-			if (action != null)
-				action ();
+				if (action != null)
+					action ();
 
-			source.Finish ();
+				source.Finish ();
 			
-			return true;
+				return true;
+			} finally {
+				if (taken)
+					opLock.Exit ();
+			}
 		}
 		
 		bool CheckInvalidState ()
