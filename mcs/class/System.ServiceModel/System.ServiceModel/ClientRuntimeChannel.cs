@@ -46,6 +46,8 @@ namespace System.ServiceModel.MonoInternal
 	{
 		ContractDescription Contract { get; }
 
+		OperationContext Context { set; }
+
 		object Process (MethodBase method, string operationName, object [] parameters);
 
 		IAsyncResult BeginProcess (MethodBase method, string operationName, object [] parameters, AsyncCallback callback, object asyncState);
@@ -93,6 +95,8 @@ namespace System.ServiceModel.MonoInternal
 		{
 			if (runtime == null)
 				throw new ArgumentNullException ("runtime");
+			if (messageVersion == null)
+				throw new ArgumentNullException ("messageVersion");
 			this.runtime = runtime;
 			this.remote_address = remoteAddress;
 			if (runtime.Via == null)
@@ -143,6 +147,10 @@ namespace System.ServiceModel.MonoInternal
 
 		internal IDuplexChannel DuplexChannel {
 			get { return channel as IDuplexChannel; }
+		}
+
+		public OperationContext Context {
+			set { context = value; }
 		}
 
 		#region IClientChannel
@@ -418,6 +426,8 @@ namespace System.ServiceModel.MonoInternal
 
 		public T GetProperty<T> () where T : class
 		{
+			if (typeof (T) == typeof (MessageVersion))
+				return (T) (object) message_version;
 			return OperationChannel.GetProperty<T> ();
 		}
 
@@ -446,19 +456,26 @@ namespace System.ServiceModel.MonoInternal
 
 		public object EndProcess (MethodBase method, string operationName, object [] parameters, IAsyncResult result)
 		{
-			context = null;
+				
 			if (result == null)
 				throw new ArgumentNullException ("result");
 			if (parameters == null)
 				throw new ArgumentNullException ("parameters");
 			// FIXME: the method arguments should be verified to be 
 			// identical to the arguments in the corresponding begin method.
-			return _processDelegate.EndInvoke (result);
+			object asyncResult = _processDelegate.EndInvoke (result);
+			context = null;
+			return asyncResult;
 		}
 
 		public object Process (MethodBase method, string operationName, object [] parameters)
 		{
+			var previousContext = OperationContext.Current;
 			try {
+				// Inherit the context from the calling thread
+				if (this.context != null) 
+					OperationContext.Current = this.context;
+
 				return DoProcess (method, operationName, parameters);
 			} catch (Exception ex) {
 #if MOONLIGHT // just for debugging
@@ -466,6 +483,9 @@ namespace System.ServiceModel.MonoInternal
 				Console.WriteLine (ex);
 #endif
 				throw;
+			} finally {
+				// Reset the context before the thread goes back into the pool
+				OperationContext.Current = previousContext;
 			}
 		}
 
