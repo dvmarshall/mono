@@ -424,7 +424,7 @@ enum {
 	REMSET_LOCATION, /* just a pointer to the exact location */
 	REMSET_RANGE,    /* range of pointer fields */
 	REMSET_OBJECT,   /* mark all the object for scanning */
-	REMSET_VTYPE,    /* a valuetype array described by a gc descriptor and a count */
+	REMSET_VTYPE,    /* a valuetype array described by a MonoClass pointer and a count */
 	REMSET_TYPE_MASK = 0x3
 };
 
@@ -820,7 +820,6 @@ align_pointer (void *ptr)
 
 typedef SgenGrayQueue GrayQueue;
 
-typedef void (*CopyOrMarkObjectFunc) (void**, GrayQueue*);
 typedef char* (*ScanObjectFunc) (char*, GrayQueue*);
 
 
@@ -970,9 +969,9 @@ alloc_complex_descriptor (gsize *bitmap, int numbits)
 }
 
 gsize*
-mono_sgen_get_complex_descriptor (GCVTable *vt)
+mono_sgen_get_complex_descriptor (mword desc)
 {
-	return complex_descriptors + (vt->desc >> LOW_TYPE_BITS);
+	return complex_descriptors + (desc >> LOW_TYPE_BITS);
 }
 
 /*
@@ -1874,7 +1873,7 @@ pin_objects_from_addresses (GCMemSection *section, void **start, void **end, voi
 		GCRootReport report;
 		report.count = 0;
 		for (idx = 0; idx < count; ++idx)
-			add_profile_gc_root (&report, definitely_pinned [idx], MONO_PROFILE_GC_ROOT_PINNING, 0);
+			add_profile_gc_root (&report, definitely_pinned [idx], MONO_PROFILE_GC_ROOT_PINNING | MONO_PROFILE_GC_ROOT_MISC, 0);
 		notify_gc_roots (&report);
 	}
 	stat_pinned_objects += count;
@@ -2502,15 +2501,15 @@ bridge_register_finalized_object (MonoObject *object)
 }
 
 static void
+stw_bridge_process (void)
+{
+	mono_sgen_bridge_processing_stw_step ();
+}
+
+static void
 bridge_process (void)
 {
-	if (finalized_array_entries <= 0)
-		return;
-
-	g_assert (mono_sgen_need_bridge_processing ());
-	mono_sgen_bridge_processing_finish (finalized_array_entries, finalized_array);
-
-	finalized_array_entries = 0;
+	mono_sgen_bridge_processing_finish ();
 }
 
 static void
@@ -2552,6 +2551,10 @@ finish_gray_stack (char *start_addr, char *end_addr, int generation, GrayQueue *
 		++ephemeron_rounds;
 	} while (!done_with_ephemerons);
 
+	mono_sgen_scan_togglerefs (copy_func, start_addr, end_addr, queue);
+	if (generation == GENERATION_OLD)
+		mono_sgen_scan_togglerefs (copy_func, nursery_start, nursery_real_end, queue);
+
 	if (mono_sgen_need_bridge_processing ()) {
 		if (finalized_array == NULL) {
 			finalized_array_capacity = 32;
@@ -2563,8 +2566,10 @@ finish_gray_stack (char *start_addr, char *end_addr, int generation, GrayQueue *
 		if (generation == GENERATION_OLD)
 			collect_bridge_objects (copy_func, nursery_start, nursery_real_end, GENERATION_NURSERY, queue);
 
-		if (finalized_array_entries > 0)
-			mono_sgen_bridge_processing_start (finalized_array_entries, finalized_array);
+		if (finalized_array_entries > 0) {
+			mono_sgen_bridge_processing_register_objects (finalized_array_entries, finalized_array);
+			finalized_array_entries = 0;
+		}
 		drain_gray_stack (queue);
 	}
 
@@ -4089,6 +4094,13 @@ mono_gc_alloc_mature (MonoVTable *vtable)
  */
 #define object_is_fin_ready(obj) (!object_is_pinned (obj) && !object_is_forwarded (obj))
 
+
+gboolean
+mono_sgen_gc_is_object_ready_for_finalization (void *object)
+{
+	return !major_collector.is_object_live (object) && object_is_fin_ready (object);
+}
+
 static gboolean
 is_critical_finalizer (FinalizeEntry *entry)
 {
@@ -4455,9 +4467,15 @@ mark_ephemerons_in_range (CopyOrMarkObjectFunc copy_func, char *start, char *end
 		char *object = current->array;
 		DEBUG (5, fprintf (gc_debug_file, "Ephemeron array at %p\n", object));
 
-		/*We ignore arrays in old gen during minor collections since all objects are promoted by the remset machinery.*/
-		if (object < start || object >= end)
-			continue;
+		/*
+		For now we process all ephemerons during all collections.
+		Ideally we should use remset information to partially scan those
+		arrays.
+		We already emit write barriers for Ephemeron fields, it's
+		just that we don't process them.
+		*/
+		/*if (object < start || object >= end)
+			continue;*/
 
 		/*It has to be alive*/
 		if (!object_is_reachable (object, start, end)) {
@@ -5345,6 +5363,9 @@ stop_world (int generation)
 {
 	int count;
 
+	/*XXX this is the right stop, thought might not be the nicest place to put it*/
+	mono_sgen_process_togglerefs ();
+
 	mono_profiler_gc_event (MONO_GC_EVENT_PRE_STOP_WORLD, generation);
 	acquire_gc_locks ();
 
@@ -5390,6 +5411,7 @@ restart_world (int generation)
 		}
 	}
 
+	stw_bridge_process ();
 	release_gc_locks ();
 
 	count = mono_sgen_thread_handshake (restart_signal_num);
@@ -5591,10 +5613,9 @@ handle_remset (mword *p, void *start_nursery, void *end_nursery, gboolean global
 		ptr = (void**)(*p & ~REMSET_TYPE_MASK);
 		if (((void*)ptr >= start_nursery && (void*)ptr < end_nursery))
 			return p + 3;
-		desc = p [1];
 		count = p [2];
 		while (count-- > 0)
-			ptr = (void**) major_collector.minor_scan_vtype ((char*)ptr, desc, start_nursery, end_nursery, queue);
+			ptr = (void**) major_collector.minor_scan_vtype ((char*)ptr, (MonoClass*)p [1], start_nursery, end_nursery, queue);
 		return p + 3;
 	}
 	default:
@@ -6523,7 +6544,7 @@ mono_gc_wbarrier_value_copy (gpointer dest, gpointer src, int count, MonoClass *
 
 		if (rs->store_next + 3 < rs->end_set) {
 			*(rs->store_next++) = (mword)dest | REMSET_VTYPE;
-			*(rs->store_next++) = (mword)klass->gc_descr;
+			*(rs->store_next++) = (mword)klass;
 			*(rs->store_next++) = (mword)count;
 			UNLOCK_GC;
 			return;
@@ -6535,7 +6556,7 @@ mono_gc_wbarrier_value_copy (gpointer dest, gpointer src, int count, MonoClass *
 		mono_sgen_thread_info_lookup (ARCH_GET_THREAD ())->remset = rs;
 #endif
 		*(rs->store_next++) = (mword)dest | REMSET_VTYPE;
-		*(rs->store_next++) = (mword)klass->gc_descr;
+		*(rs->store_next++) = (mword)klass;
 		*(rs->store_next++) = (mword)count;
 	}
 	UNLOCK_GC;
@@ -6679,7 +6700,7 @@ find_in_remset_loc (mword *p, char *addr, gboolean *found)
 		return p + 1;
 	case REMSET_VTYPE:
 		ptr = (void**)(*p & ~REMSET_TYPE_MASK);
-		desc = p [1];
+		desc = ((MonoClass*)p [1])->gc_descr;
 		count = p [2];
 
 		switch (desc & 0x7) {
@@ -8096,6 +8117,18 @@ FILE*
 mono_sgen_get_logfile (void)
 {
 	return gc_debug_file;
+}
+
+void
+mono_sgen_gc_lock (void)
+{
+	LOCK_GC;
+}
+
+void
+mono_sgen_gc_unlock (void)
+{
+	UNLOCK_GC;
 }
 
 #endif /* HAVE_SGEN_GC */
