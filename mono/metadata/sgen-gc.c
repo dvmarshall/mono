@@ -3,6 +3,7 @@
  *
  * Author:
  * 	Paolo Molaro (lupus@ximian.com)
+ *  Rodrigo Kumpera (kumpera@gmail.com)
  *
  * Copyright 2005-2011 Novell, Inc (http://www.novell.com)
  * Copyright 2011 Xamarin, Inc (http://www.xamarin.com)
@@ -25,6 +26,7 @@
  *
  * Copyright 2001-2003 Ximian, Inc
  * Copyright 2003-2010 Novell, Inc.
+ * Copyright 2011 Xamarin, Inc.
  * 
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -175,7 +177,9 @@
 	A good place to start is add_nursery_frag. The tricky thing here is
 	placing those objects atomically outside of a collection.
 
-
+ *) Allocation should use asymmetric Dekker synchronization:
+ 	http://blogs.oracle.com/dave/resource/Asymmetric-Dekker-Synchronization.txt
+	This should help weak consistency archs.
  */
 #include "config.h"
 #ifdef HAVE_SGEN_GC
@@ -217,6 +221,7 @@
 #include "utils/mono-counters.h"
 #include "utils/mono-proclib.h"
 #include "utils/mono-logger-internal.h"
+#include "utils/mono-memory-model.h"
 
 #include <mono/utils/memcheck.h>
 
@@ -697,9 +702,18 @@ static pthread_key_t thread_info_key;
 #define IN_CRITICAL_REGION (__thread_info__->in_critical_region)
 #endif
 
-/* we use the memory barrier only to prevent compiler reordering (a memory constraint may be enough) */
-#define ENTER_CRITICAL_REGION do {IN_CRITICAL_REGION = 1;mono_memory_barrier ();} while (0)
-#define EXIT_CRITICAL_REGION  do {IN_CRITICAL_REGION = 0;mono_memory_barrier ();} while (0)
+#ifndef DISABLE_CRITICAL_REGION
+
+/* Enter must be visible before anything is done in the critical region. */
+#define ENTER_CRITICAL_REGION do { mono_atomic_store_acquire (&IN_CRITICAL_REGION, 1); } while (0)
+
+/* Exit must make sure all critical regions stores are visible before it signal the end of the region. 
+ * We don't need to emit a full barrier since we
+ */
+#define EXIT_CRITICAL_REGION  do { mono_atomic_store_release (&IN_CRITICAL_REGION, 0); } while (0)
+
+
+#endif
 
 /*
  * FIXME: What is faster, a TLS variable pointing to a structure, or separate TLS 
@@ -2540,6 +2554,15 @@ finish_gray_stack (char *start_addr, char *end_addr, int generation, GrayQueue *
 	DEBUG (2, fprintf (gc_debug_file, "%s generation done\n", generation_name (generation)));
 
 	/*
+	Reset bridge data, we might have lingering data from a previous collection if this is a major
+	collection trigged by minor overflow.
+
+	We must reset the gathered bridges since their original block might be evacuated due to major
+	fragmentation in the meanwhile and the bridge code should not have to deal with that.
+	*/
+	mono_sgen_bridge_reset_data ();
+
+	/*
 	 * Walk the ephemeron tables marking all values with reachable keys. This must be completely done
 	 * before processing finalizable objects or non-tracking weak hamdle to avoid finalizing/clearing
 	 * objects that are in fact reachable.
@@ -3301,6 +3324,9 @@ major_do_collection (const char *reason)
 	DEBUG (6, fprintf (gc_debug_file, "Pinning from large objects\n"));
 	for (bigobj = los_object_list; bigobj; bigobj = bigobj->next) {
 		int dummy;
+		gboolean profile_roots = mono_profiler_get_events () & MONO_PROFILE_GC_ROOTS;
+		GCRootReport report;
+		report.count = 0;
 		if (mono_sgen_find_optimized_pin_queue_area (bigobj->data, (char*)bigobj->data + bigobj->size, &dummy)) {
 			pin_object (bigobj->data);
 			/* FIXME: only enqueue if object has references */
@@ -3308,7 +3334,12 @@ major_do_collection (const char *reason)
 			if (heap_dump_file)
 				mono_sgen_pin_stats_register_object ((char*) bigobj->data, safe_object_get_size ((MonoObject*) bigobj->data));
 			DEBUG (6, fprintf (gc_debug_file, "Marked large object %p (%s) size: %lu from roots\n", bigobj->data, safe_name (bigobj->data), (unsigned long)bigobj->size));
+			
+			if (profile_roots)
+				add_profile_gc_root (&report, bigobj->data, MONO_PROFILE_GC_ROOT_PINNING | MONO_PROFILE_GC_ROOT_MISC, 0);
 		}
+		if (profile_roots)
+			notify_gc_roots (&report);
 	}
 	/* second pass for the sections */
 	mono_sgen_pin_objects_in_section (nursery_section, WORKERS_DISTRIBUTE_GRAY_QUEUE);
@@ -3767,7 +3798,7 @@ mono_gc_alloc_obj_nolock (MonoVTable *vtable, size_t size)
 			DEBUG (6, fprintf (gc_debug_file, "Allocated object %p, vtable: %p (%s), size: %zd\n", p, vtable, vtable->klass->name, size));
 			binary_protocol_alloc (p , vtable, size);
 			g_assert (*p == NULL);
-			*p = vtable;
+			mono_atomic_store_seq (p, vtable);
 
 			g_assert (TLAB_NEXT == new_next);
 
@@ -3883,7 +3914,7 @@ mono_gc_alloc_obj_nolock (MonoVTable *vtable, size_t size)
 	if (G_LIKELY (p)) {
 		DEBUG (6, fprintf (gc_debug_file, "Allocated object %p, vtable: %p (%s), size: %zd\n", p, vtable, vtable->klass->name, size));
 		binary_protocol_alloc (p, vtable, size);
-		*p = vtable;
+		mono_atomic_store_seq (p, vtable);
 	}
 
 	return p;
@@ -3921,9 +3952,7 @@ mono_gc_try_alloc_obj_nolock (MonoVTable *vtable, size_t size)
 			DEBUG (6, fprintf (gc_debug_file, "Allocated object %p, vtable: %p (%s), size: %zd\n", p, vtable, vtable->klass->name, size));
 			binary_protocol_alloc (p, vtable, size);
 			g_assert (*p == NULL);
-			*p = vtable;
-
-			g_assert (TLAB_NEXT == new_next);
+			mono_atomic_store_seq (p, vtable);
 
 			return p;
 		}
@@ -3962,6 +3991,7 @@ mono_gc_alloc_vector (MonoVTable *vtable, size_t size, uintptr_t max_length)
 	ENTER_CRITICAL_REGION;
 	arr = mono_gc_try_alloc_obj_nolock (vtable, size);
 	if (arr) {
+		/*This doesn't require fencing since EXIT_CRITICAL_REGION already does it for us*/
 		arr->max_length = max_length;
 		EXIT_CRITICAL_REGION;
 		return arr;
@@ -4017,6 +4047,7 @@ mono_gc_alloc_string (MonoVTable *vtable, size_t size, gint32 len)
 	ENTER_CRITICAL_REGION;
 	str = mono_gc_try_alloc_obj_nolock (vtable, size);
 	if (str) {
+		/*This doesn't require fencing since EXIT_CRITICAL_REGION already does it for us*/
 		str->length = len;
 		EXIT_CRITICAL_REGION;
 		return str;
@@ -4060,7 +4091,7 @@ mono_gc_alloc_pinned_obj (MonoVTable *vtable, size_t size)
 	if (G_LIKELY (p)) {
 		DEBUG (6, fprintf (gc_debug_file, "Allocated pinned object %p, vtable: %p (%s), size: %zd\n", p, vtable, vtable->klass->name, size));
 		binary_protocol_alloc_pinned (p, vtable, size);
-		*p = vtable;
+		mono_atomic_store_seq (p, vtable);
 	}
 	UNLOCK_GC;
 	return p;
@@ -4073,7 +4104,7 @@ mono_gc_alloc_mature (MonoVTable *vtable)
 	size_t size = ALIGN_UP (vtable->klass->instance_size);
 	LOCK_GC;
 	res = alloc_degraded (vtable, size);
-	*res = vtable;
+	mono_atomic_store_seq (res, vtable);
 	UNLOCK_GC;
 	if (G_UNLIKELY (vtable->klass->has_finalize))
 		mono_object_register_finalizer ((MonoObject*)res);
@@ -5193,7 +5224,7 @@ restart_threads_until_none_in_managed_allocator (void)
 			for (info = thread_table [i]; info; info = info->next) {
 				gboolean result;
 
-				if (info->skip)
+				if (info->skip || info->gc_disabled)
 					continue;
 				if (!info->stack_start || info->in_critical_region ||
 						is_ip_in_managed_allocator (info->stopped_domain, info->stopped_ip)) {
@@ -5500,6 +5531,10 @@ scan_thread_data (void *start_nursery, void *end_nursery, gboolean precise)
 		for (info = thread_table [i]; info; info = info->next) {
 			if (info->skip) {
 				DEBUG (3, fprintf (gc_debug_file, "Skipping dead thread %p, range: %p-%p, size: %td\n", info, info->stack_start, info->stack_end, (char*)info->stack_end - (char*)info->stack_start));
+				continue;
+			}
+			if (info->gc_disabled) {
+				DEBUG (3, fprintf (gc_debug_file, "GC disabled for thread %p, range: %p-%p, size: %td\n", info, info->stack_start, info->stack_end, (char*)info->stack_end - (char*)info->stack_start));
 				continue;
 			}
 			DEBUG (3, fprintf (gc_debug_file, "Scanning thread %p, range: %p-%p, size: %td, pinned=%d\n", info, info->stack_start, info->stack_end, (char*)info->stack_end - (char*)info->stack_start, next_pin_slot));
@@ -8128,6 +8163,16 @@ mono_sgen_gc_lock (void)
 void
 mono_sgen_gc_unlock (void)
 {
+	UNLOCK_GC;
+}
+
+
+void mono_gc_set_skip_thread (gboolean skip)
+{
+	SgenThreadInfo *info = mono_sgen_thread_info_lookup (ARCH_GET_THREAD ());
+
+	LOCK_GC;
+	info->gc_disabled = skip;
 	UNLOCK_GC;
 }
 

@@ -42,6 +42,7 @@
 #include <mono/utils/mono-string.h>
 #include <mono/utils/mono-error-internals.h>
 #include <mono/utils/mono-logger-internal.h>
+#include <mono/utils/mono-memory-model.h>
 MonoStats mono_stats;
 
 gboolean mono_print_vtable = FALSE;
@@ -5170,7 +5171,6 @@ mono_class_setup_parent (MonoClass *class, MonoClass *parent)
 			class->valuetype = class->enumtype = 1;
 		}
 		/*class->enumtype = class->parent->enumtype; */
-		mono_class_setup_supertypes (class);
 	} else {
 		/* initialize com types if COM interfaces are present */
 		if (MONO_CLASS_IS_IMPORT (class))
@@ -5197,6 +5197,7 @@ void
 mono_class_setup_supertypes (MonoClass *class)
 {
 	int ms;
+	MonoClass **supertypes;
 
 	if (class->supertypes)
 		return;
@@ -5209,14 +5210,16 @@ mono_class_setup_supertypes (MonoClass *class)
 		class->idepth = 1;
 
 	ms = MAX (MONO_DEFAULT_SUPERTABLE_SIZE, class->idepth);
-	class->supertypes = mono_class_alloc0 (class, sizeof (MonoClass *) * ms);
+	supertypes = mono_class_alloc0 (class, sizeof (MonoClass *) * ms);
 
 	if (class->parent) {
-		class->supertypes [class->idepth - 1] = class;
-		memcpy (class->supertypes, class->parent->supertypes, class->parent->idepth * sizeof (gpointer));
+		supertypes [class->idepth - 1] = class;
+		memcpy (supertypes, class->parent->supertypes, class->parent->idepth * sizeof (gpointer));
 	} else {
-		class->supertypes [0] = class;
+		supertypes [0] = class;
 	}
+
+	mono_atomic_store_release (&class->supertypes, supertypes);
 }
 
 /**
@@ -7189,7 +7192,10 @@ gboolean
 mono_class_is_subclass_of (MonoClass *klass, MonoClass *klassc, 
 			   gboolean check_interfaces)
 {
-	g_assert (klassc->idepth > 0);
+	/*setup_supertypes don't mono_class_init anything */
+	mono_class_setup_supertypes (klass);
+	mono_class_setup_supertypes (klassc);
+
 	if (check_interfaces && MONO_CLASS_IS_INTERFACE (klassc) && !MONO_CLASS_IS_INTERFACE (klass)) {
 		if (MONO_CLASS_IMPLEMENTS_INTERFACE (klass, klassc->interface_id))
 			return TRUE;
@@ -7300,6 +7306,12 @@ mono_class_is_assignable_from (MonoClass *klass, MonoClass *oklass)
 
 	if (!oklass->inited)
 		mono_class_init (oklass);
+
+	if (!klass->supertypes)
+		mono_class_setup_supertypes (klass);
+
+	if (!oklass->supertypes)
+		mono_class_setup_supertypes (oklass);
 
 	if (klass->exception_type || oklass->exception_type)
 		return FALSE;

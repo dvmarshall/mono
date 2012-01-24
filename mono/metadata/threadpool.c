@@ -397,8 +397,14 @@ threadpool_jobs_inc (MonoObject *obj)
 static gboolean
 threadpool_jobs_dec (MonoObject *obj)
 {
-	MonoDomain *domain = obj->vtable->domain;
-	int remaining_jobs = InterlockedDecrement (&domain->threadpool_jobs);
+	MonoDomain *domain;
+	int remaining_jobs;
+
+	if (obj == NULL)
+		return FALSE;
+
+	domain = obj->vtable->domain;
+	remaining_jobs = InterlockedDecrement (&domain->threadpool_jobs);
 	if (remaining_jobs == 0 && domain->cleanup_semaphore) {
 		ReleaseSemaphore (domain->cleanup_semaphore, 1, NULL);
 		return TRUE;
@@ -1478,6 +1484,8 @@ async_invoke_thread (gpointer data)
 		while (!must_die && !data && n_naps < 4) {
 			gboolean res;
 
+			mono_gc_set_skip_thread (TRUE);
+
 			InterlockedIncrement (&tp->waiting);
 #if defined(__OpenBSD__)
 			while (mono_cq_count (tp->queue) == 0 && (res = mono_sem_wait (&tp->new_job, TRUE)) == -1) {// && errno == EINTR) {
@@ -1490,6 +1498,9 @@ async_invoke_thread (gpointer data)
 					mono_thread_interruption_checkpoint ();
 			}
 			InterlockedDecrement (&tp->waiting);
+
+			mono_gc_set_skip_thread (FALSE);
+
 			if (mono_runtime_is_shutting_down ())
 				break;
 			must_die = should_i_die (tp);

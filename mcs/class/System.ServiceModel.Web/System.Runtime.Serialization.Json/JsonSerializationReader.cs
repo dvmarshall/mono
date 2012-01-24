@@ -72,9 +72,12 @@ namespace System.Runtime.Serialization.Json
 			if (serialized_object_count ++ == serializer.MaxItemsInObjectGraph)
 				throw SerializationError (String.Format ("The object graph exceeded the maximum object count '{0}' specified in the serializer", serializer.MaxItemsInObjectGraph));
 
-			if (type.IsGenericType && type.GetGenericTypeDefinition () == typeof (Nullable<>))
+			bool nullable = false;
+			if (type.IsGenericType && type.GetGenericTypeDefinition () == typeof (Nullable<>)) {
+				nullable = true;
 				type = Nullable.GetUnderlyingType (type);
-			
+			}
+
 			bool isNull = reader.GetAttribute ("type") == "null";
 
 			switch (Type.GetTypeCode (type)) {
@@ -122,8 +125,11 @@ namespace System.Runtime.Serialization.Json
 			case TypeCode.DateTime:
 				// it does not use ReadElementContentAsDateTime(). Different string format.
 				var s = reader.ReadElementContentAsString ();
-				if (s.Length < 2 || !s.StartsWith ("/Date(", StringComparison.Ordinal) || !s.EndsWith (")/", StringComparison.Ordinal))
+				if (s.Length < 2 || !s.StartsWith ("/Date(", StringComparison.Ordinal) || !s.EndsWith (")/", StringComparison.Ordinal)) {
+					if (nullable)
+						return null;
 					throw new XmlException ("Invalid JSON DateTime format. The value format should be '/Date(UnixTime)/'");
+				}
 
 				// The date can contain [SIGN]LONG, [SIGN]LONG+HOURSMINUTES or [SIGN]LONG-HOURSMINUTES
 				// the format for HOURSMINUTES is DDDD
@@ -336,7 +342,18 @@ namespace System.Runtime.Serialization.Json
 					argarr [0] = elem;
 					addMethod.Invoke (c, argarr);
 				}
+#if NET_2_1
+				if (collectionType.IsArray && c is ICollection) {
+					ICollection collection = (ICollection) c;
+					Array array = Array.CreateInstance (elementType, collection.Count);
+					collection.CopyTo (array, 0);
+					ret = array;
+				}
+				else
+					ret = c;
+#else
 				ret = collectionType.IsArray ? ((ArrayList) c).ToArray (elementType) : c;
+#endif
 			} else {
 				object c = Activator.CreateInstance (collectionType);
 				MethodInfo add = collectionType.GetMethod ("Add", new Type [] {elementType});

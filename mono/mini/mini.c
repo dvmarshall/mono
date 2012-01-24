@@ -1142,7 +1142,7 @@ mono_compile_create_var_for_vreg (MonoCompile *cfg, MonoType *type, int opcode, 
 			mono_mark_vreg_as_mp (cfg, vreg);
 		} else {
 			MonoType *t = mini_type_get_underlying_type (NULL, type);
-			if ((MONO_TYPE_ISSTRUCT (t) && inst->klass->has_references) || MONO_TYPE_IS_REFERENCE (t)) {
+			if ((MONO_TYPE_ISSTRUCT (t) && inst->klass->has_references) || mini_type_is_reference (cfg, t)) {
 				inst->flags |= MONO_INST_GC_TRACK;
 				mono_mark_vreg_as_ref (cfg, vreg);
 			}
@@ -3007,7 +3007,7 @@ mono_resolve_patch_target (MonoMethod *method, MonoDomain *domain, guint8 *code,
 			target = code;
 		} else {
 			/* get the trampoline to the method from the domain */
-			target = mono_create_jit_trampoline (patch_info->data.method);
+			target = mono_create_jit_trampoline_in_domain (domain, patch_info->data.method);
 		}
 		break;
 	case MONO_PATCH_INFO_SWITCH: {
@@ -3077,7 +3077,7 @@ mono_resolve_patch_target (MonoMethod *method, MonoDomain *domain, guint8 *code,
 		break;
 	}
 	case MONO_PATCH_INFO_DELEGATE_TRAMPOLINE:
-		target = mono_create_delegate_trampoline (patch_info->data.klass);
+		target = mono_create_delegate_trampoline (domain, patch_info->data.klass);
 		break;
 	case MONO_PATCH_INFO_SFLDA: {
 		MonoVTable *vtable = mono_class_vtable (domain, patch_info->data.field->parent);
@@ -5142,7 +5142,7 @@ mono_jit_compile_method_inner (MonoMethod *method, MonoDomain *target_domain, in
 				return mono_get_addr_from_ftnptr ((gpointer)mono_icall_get_wrapper_full (mi, TRUE));
 			} else if (*name == 'I' && (strcmp (name, "Invoke") == 0)) {
 #ifdef MONO_ARCH_HAVE_CREATE_DELEGATE_TRAMPOLINE
-				return mono_create_delegate_trampoline (method->klass);
+				return mono_create_delegate_trampoline (target_domain, method->klass);
 #else
 				nm = mono_marshal_get_delegate_invoke (method, NULL);
 				return mono_get_addr_from_ftnptr (mono_compile_method (nm));
@@ -5376,6 +5376,13 @@ mono_jit_compile_method_with_opt (MonoMethod *method, guint32 opt, MonoException
 		/* Must be domain neutral since there is only one copy */
 		opt |= MONO_OPT_SHARED;
 	}
+
+	if (method->dynamic)
+		opt &= ~MONO_OPT_SHARED;
+
+	/* These methods can become invalid when a domain is unloaded */
+	if (method->klass->image != mono_get_corlib () || method->is_inflated)
+		opt &= ~MONO_OPT_SHARED;
 
 	if (opt & MONO_OPT_SHARED)
 		target_domain = mono_get_root_domain ();
