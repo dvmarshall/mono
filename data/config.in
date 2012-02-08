@@ -30,4 +30,6 @@
 		<dllentry dll="libComponentSystem.so" name="CoCreateInstance" target="AnsCoCreateInstance"/>
 	</dllmap>
 	<dllmap dll="ComponentSystem.140.dll" target="libComponentSystem.so" os="!windows"/>
+        <dllmap dll="ComponentSystem.145.dll" target="libComponentSystem.so" os="!windows"/>
+        <dllmap dll="ComponentSystem.150.dll" target="libComponentSystem.so" os="!windows"/>
 </configuration>
