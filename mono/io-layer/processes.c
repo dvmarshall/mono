@@ -502,7 +502,13 @@ gboolean ShellExecuteEx (WapiShellExecuteInfo *sei)
 	 * into and back out of utf8 is because there is no
 	 * g_strdup_printf () equivalent for gunichar2 :-(
 	 */
-	args = utf16_concat (utf16_quote, sei->lpFile, utf16_quote, sei->lpParameters == NULL ? NULL : utf16_space, sei->lpParameters, NULL);
+        /* Removing the quotes added for defect to resolve "#"'s in the filename 
+	 * (https://bugzilla.novell.com/show_bug.cgi?id=3715670)  This resulted in an issue 
+	 * in the some code that included extra white space at the end of the filename
+	 * This will likely result in a conflict in merging later.
+	 * The bug is currently repopened
+         */
+	args = utf16_concat (sei->lpFile, sei->lpParameters == NULL ? NULL : utf16_space, sei->lpParameters, NULL);
 	if (args == NULL){
 		SetLastError (ERROR_INVALID_DATA);
 		return (FALSE);

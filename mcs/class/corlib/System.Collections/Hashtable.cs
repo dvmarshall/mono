@@ -531,7 +531,7 @@ namespace System.Collections {
 				info.AddValue ("KeyComparer", equalityComparer);
 			else
 				info.AddValue ("Comparer", comparerRef);
-			if (hcpRef != null)
+			//if (hcpRef != null)
 				info.AddValue ("HashCodeProvider", hcpRef);
 			info.AddValue ("HashSize", this.table.Length);
 // Create Keys
