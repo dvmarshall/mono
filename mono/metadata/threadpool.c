@@ -768,15 +768,14 @@ monitor_thread (gpointer unused)
 	ThreadPool *pools [2];
 	MonoInternalThread *thread;
 	guint32 ms;
-	gboolean need_one;
 	int i;
 
 	pools [0] = &async_tp;
 	pools [1] = &async_io_tp;
 	thread = mono_thread_internal_current ();
-	ves_icall_System_Threading_Thread_SetName_internal (thread, mono_string_new (mono_domain_get (), "Threapool monitor"));
+	ves_icall_System_Threading_Thread_SetName_internal (thread, mono_string_new (mono_domain_get (), "Threadpool monitor"));
 	while (1) {
-		ms = 500;
+		ms = 100;
 		do {
 			guint32 ts;
 			ts = mono_msec_ticks ();
@@ -792,26 +791,30 @@ monitor_thread (gpointer unused)
 		if (mono_runtime_is_shutting_down ())
 			break;
 
+		int j;
 		for (i = 0; i < 2; i++) {
 			ThreadPool *tp;
 			tp = pools [i];
-			if (tp->waiting > 0)
+			int neededThreadCount;
+			if (InterlockedCompareExchange (&tp->waiting, 0, 0) > 0)
 				continue;
-			need_one = (mono_cq_count (tp->queue) > 0);
-			if (!need_one && !tp->is_io) {
+
+			neededThreadCount = mono_cq_count (tp->queue);
+			if (neededThreadCount == 0 && !tp->is_io) {
 				EnterCriticalSection (&wsqs_lock);
-				for (i = 0; wsqs != NULL && i < wsqs->len; i++) {
+				for (j = 0; wsqs != NULL && j < wsqs->len; j++) {
 					MonoWSQ *wsq;
-					wsq = g_ptr_array_index (wsqs, i);
-					if (mono_wsq_count (wsq) != 0) {
-						need_one = TRUE;
+					wsq = g_ptr_array_index (wsqs, j);
+					neededThreadCount = mono_wsq_count (wsq);
+					if (neededThreadCount > 0)
 						break;
-					}
 				}
 				LeaveCriticalSection (&wsqs_lock);
 			}
-			if (need_one)
+
+			for (j = 0; j < neededThreadCount; j++) {
 				threadpool_start_thread (tp);
+			}
 		}
 	}
 }
@@ -846,7 +849,7 @@ mono_thread_pool_init ()
 
 	thread_count = MIN (cpu_count * threads_per_cpu, 100 * cpu_count);
 	threadpool_init (&async_tp, thread_count, MAX (100 * cpu_count, thread_count), async_invoke_thread);
-	threadpool_init (&async_io_tp, cpu_count * 2, cpu_count * 4, async_invoke_thread);
+	threadpool_init (&async_io_tp, cpu_count * 2, 100 * cpu_count, async_invoke_thread);
 	async_io_tp.is_io = TRUE;
 
 	async_call_klass = mono_class_from_name (mono_defaults.corlib, "System", "MonoAsyncCall");
@@ -1031,7 +1034,7 @@ threadpool_start_thread (ThreadPool *tp)
 static void
 pulse_on_new_job (ThreadPool *tp)
 {
-	if (tp->waiting)
+	if (InterlockedCompareExchange (&tp->waiting, 0, 0))
 		MONO_SEM_POST (&tp->new_job);
 }
 
@@ -1084,7 +1087,7 @@ threadpool_append_jobs (ThreadPool *tp, MonoObject **jobs, gint njobs)
 		mono_cq_enqueue (tp->queue, ar);
 	}
 
-	for (i = 0; tp->waiting > 0 && i < MIN(njobs, tp->max_threads); i++)
+	for (i = 0; InterlockedCompareExchange (&tp->waiting, 0, 0) > 0 && i < MIN(njobs, tp->max_threads); i++)
 		pulse_on_new_job (tp);
 }
 
