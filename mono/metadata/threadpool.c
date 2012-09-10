@@ -811,6 +811,10 @@ monitor_thread (gpointer unused)
 				}
 				LeaveCriticalSection (&wsqs_lock);
 			}
+                        
+                        if (neededThreadCount > 100) {
+                                neededThreadCount = 100;
+                        }
 
 			for (j = 0; j < neededThreadCount; j++) {
 				threadpool_start_thread (tp);
@@ -848,8 +852,8 @@ mono_thread_pool_init ()
 	}
 
 	thread_count = MIN (cpu_count * threads_per_cpu, 100 * cpu_count);
-	threadpool_init (&async_tp, thread_count, MAX (100 * cpu_count, thread_count), async_invoke_thread);
-	threadpool_init (&async_io_tp, cpu_count * 2, 100 * cpu_count, async_invoke_thread);
+	threadpool_init (&async_tp, MAX (thread_count, 8), MAX (MIN (100 * cpu_count, 800), thread_count), async_invoke_thread);
+	threadpool_init (&async_io_tp, MAX(cpu_count * 2, 8), MIN (100 * cpu_count, 800), async_invoke_thread);
 	async_io_tp.is_io = TRUE;
 
 	async_call_klass = mono_class_from_name (mono_defaults.corlib, "System", "MonoAsyncCall");
