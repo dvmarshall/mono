@@ -264,7 +264,7 @@ g_markup_parse_context_parse (GMarkupParseContext *context,
 			      GError **error)
 {
 	const char *p,  *end;
-	
+
 	g_return_val_if_fail (context != NULL, FALSE);
 	g_return_val_if_fail (text != NULL, FALSE);
 	g_return_val_if_fail (text_len >= 0, FALSE);
@@ -276,7 +276,7 @@ g_markup_parse_context_parse (GMarkupParseContext *context,
 
 		switch (context->state){
 		case START:
-			if (c == ' ' || c == '\t' || c == '\f' || c == '\n')
+			if (c == ' ' || c == '\t' || c == '\f' || c == '\n' || (c & 0x80))
 				continue;
 			if (c == '<'){
 				if (p+1 < end && p [1] == '?'){
@@ -314,7 +314,7 @@ g_markup_parse_context_parse (GMarkupParseContext *context,
 				goto fail;
 			}
 			
-			for (++p; p < end && (my_isalnum (*p) || (*p == '.')); p++)
+			for (++p; p < end && (my_isalnum (*p) || (*p == '.') || (*p == '-')); p++)
 				;
 			if (p == end){
 				set_error ("%s", "Expected an element");
