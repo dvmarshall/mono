@@ -4534,7 +4534,7 @@ handle_castclass (MonoCompile *cfg, MonoClass *klass, MonoInst *src, guint8 *ip,
 	if (context_used) {
 		MonoInst *args [3];
 
-		if(mini_class_has_reference_variant_generic_argument (cfg, klass, context_used) || is_complex_isinst (klass)) {
+		if(mini_class_has_reference_variant_generic_argument (cfg, klass, context_used)) {
 			MonoInst *cache_ins;
 
 			cache_ins = emit_get_rgctx_klass (cfg, context_used, klass, MONO_RGCTX_INFO_CAST_CACHE);
@@ -4552,6 +4552,20 @@ handle_castclass (MonoCompile *cfg, MonoClass *klass, MonoInst *src, guint8 *ip,
 		}
 
 		klass_inst = emit_get_rgctx_klass (cfg, context_used, klass, MONO_RGCTX_INFO_KLASS);
+
+               if (is_complex_isinst (klass)) {
+                       /* Complex case, handle by an icall */
+
+                       /* obj */
+                       args [0] = src;
+
+                       /* klass */
+                       args [1] = klass_inst;
+
+                       return mono_emit_jit_icall (cfg, mono_object_castclass_unbox, args); 
+               } else {
+                       /* Simple case, handled by the code below */
+               }
 	}
 
 	NEW_BBLOCK (cfg, is_null_bb);
@@ -4616,7 +4630,7 @@ handle_isinst (MonoCompile *cfg, MonoClass *klass, MonoInst *src, int context_us
 	if (context_used) {
 		MonoInst *args [3];
 
-		if(mini_class_has_reference_variant_generic_argument (cfg, klass, context_used) || is_complex_isinst (klass)) {
+		if(mini_class_has_reference_variant_generic_argument (cfg, klass, context_used)) {
 			MonoMethod *mono_isinst = mono_marshal_get_isinst_with_cache ();
 			MonoInst *cache_ins;
 
@@ -4635,6 +4649,22 @@ handle_isinst (MonoCompile *cfg, MonoClass *klass, MonoInst *src, int context_us
 		}
 
 		klass_inst = emit_get_rgctx_klass (cfg, context_used, klass, MONO_RGCTX_INFO_KLASS);
+
+
+               if (is_complex_isinst (klass)) {
+                       /* Complex case, handle by an icall */
+
+                       /* obj */
+                       args [0] = src;
+
+                       /* klass */
+                       args [1] = klass_inst;
+
+                       return mono_emit_jit_icall (cfg, mono_object_isinst, args);
+               } else {
+                       /* Simple case, the code below can handle it */
+               }
+
 	}
 
 	NEW_BBLOCK (cfg, is_null_bb);
