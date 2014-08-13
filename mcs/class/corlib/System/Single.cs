@@ -252,7 +252,7 @@ namespace System
 
 		public static bool TryParse (string s, out float result)
 		{
-			return TryParse (s, NumberStyles.Any, null, out result);
+			return TryParse (s, NumberStyles.Float | NumberStyles.AllowThousands, null, out result);
 		}
 
 		public override string ToString ()
