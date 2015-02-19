@@ -519,7 +519,11 @@ namespace Mono.CSharp {
 			// Default value was specified using an expression
 			//
 			if (default_expr != null) {
-				((DefaultParameterValueExpression)default_expr).Resolve (rc, this);
+                               DefaultParameterValueExpression defparamvalue_expr = default_expr as DefaultParameterValueExpression;
+                                if (defparamvalue_expr == null)
+                                        defparamvalue_expr = new DefaultParameterValueExpression(default_expr);
+                                defparamvalue_expr.Resolve (rc, this);
+
 				if (attributes != null)
 					ResolveCallerAttributes (rc);
 
