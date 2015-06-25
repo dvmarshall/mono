@@ -7122,7 +7122,7 @@ namespace Mono.CSharp
 				return null;
 			}
 
-			IsSpecialMethodInvocation (ec, method, loc);
+			//IsSpecialMethodInvocation (ec, method, loc);
 			
 			eclass = ExprClass.Value;
 			return this;
