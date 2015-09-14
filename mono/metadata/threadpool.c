@@ -773,7 +773,7 @@ signal_handler (int signo)
 }
 #endif
 
-#define SAMPLES_PERIOD 500
+#define SAMPLES_PERIOD 100
 #define HISTORY_SIZE 10
 /* number of iteration without any jobs
    in the queue before going to sleep */
@@ -998,8 +998,9 @@ mono_thread_pool_init (void)
 	}
 
 	thread_count = MIN (cpu_count * threads_per_cpu, 100 * cpu_count);
-	threadpool_init (&async_tp, thread_count, MAX (100 * cpu_count, thread_count), async_invoke_thread);
-	threadpool_init (&async_io_tp, cpu_count * 2, cpu_count * 4, async_invoke_thread);
+	threadpool_init (&async_tp, MAX (thread_count, 8), MAX (MIN (100 * cpu_count, 800), thread_count), async_invoke_thread);
+	threadpool_init (&async_io_tp, MAX(cpu_count * 2, 8), MIN (100 * cpu_count, 800), async_invoke_thread);
+
 	async_io_tp.is_io = TRUE;
 
 	async_call_klass = mono_class_from_name (mono_defaults.corlib, "System", "MonoAsyncCall");
