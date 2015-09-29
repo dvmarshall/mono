@@ -903,7 +903,8 @@ namespace System.Runtime.Serialization.Formatters.Binary
 							return typeof (MonoType);
 						else if (name == "System.RuntimeType[]")
 							return typeof (MonoType[]);
-					Type t = Type.GetType (name);
+					long asmid = (long) reader.ReadUInt32();
+					Type t = GetDeserializationType (asmid, name, throwOnError);
 					if (t != null)
 						return t;
 
