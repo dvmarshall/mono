@@ -638,13 +638,35 @@ namespace System.Runtime.Serialization.Formatters.Binary
 			
 			// Gets the type
 
-			if (!isRuntimeObject) 
+			if (!isRuntimeObject)
 			{
 				long assemblyId = (long)reader.ReadUInt32();
 				metadata.Type = GetDeserializationType (assemblyId, className);
 			}
 			else
-				metadata.Type = Type.GetType (className, true);
+			{
+				if (_binder != null && className.Contains(", Version"))
+				{
+					foreach (DictionaryEntry entry in _registeredAssemblies)
+					{
+						if (className.Contains(entry.Value.ToString()))
+						{
+							try 
+							{
+				                    		metadata.Type = GetDeserializationType ((long)entry.Key, className, false);
+							}
+							catch {}
+
+                                                    	if (metadata.Type != null)
+                                                        	break;
+						}
+					}
+                                }  
+
+                                if (metadata.Type == null)
+                                        metadata.Type = Type.GetType (className, true);
+                        }
+ 
 
 			metadata.MemberTypes = types;
 			metadata.MemberNames = names;
@@ -903,8 +925,22 @@ namespace System.Runtime.Serialization.Formatters.Binary
 							return typeof (MonoType);
 						else if (name == "System.RuntimeType[]")
 							return typeof (MonoType[]);
-					long asmid = (long) reader.ReadUInt32();
-					Type t = GetDeserializationType (asmid, name, throwOnError);
+					Type t = null;
+                                        if (_context.State != StreamingContextStates.Remoting && _binder != null)
+                                        {
+						long asmid = (long) reader.ReadUInt32();
+						reader.BaseStream.Position = reader.BaseStream.Position - sizeof(UInt32);
+
+						try 
+						{
+							t = GetDeserializationType (asmid, name, false);
+						} 
+						catch {}
+					}
+
+					if (t == null)
+                                                t = Type.GetType(name);
+                                    
 					if (t != null)
 						return t;
 
