@@ -926,7 +926,7 @@ namespace System.Runtime.Serialization.Formatters.Binary
 						else if (name == "System.RuntimeType[]")
 							return typeof (MonoType[]);
 					Type t = null;
-                                        if (_context.State != StreamingContextStates.Remoting && _binder != null)
+                                        if (_context.State != StreamingContextStates.Remoting && _binder != null && reader.BaseStream.Length > reader.BaseStream.Position + sizeof(UInt32))
                                         {
 						long asmid = (long) reader.ReadUInt32();
 						reader.BaseStream.Position = reader.BaseStream.Position - sizeof(UInt32);
