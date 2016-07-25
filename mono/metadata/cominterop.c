@@ -35,6 +35,7 @@
 #include "mono/utils/mono-counters.h"
 #include "mono/utils/strenc.h"
 #include "mono/utils/atomic.h"
+#include "mono/metadata/marshal-hooks.h"
 #include <string.h>
 #include <errno.h>
 
@@ -2610,8 +2611,8 @@ init_com_provider_ms (void)
 	return TRUE;
 }
 
-gpointer
-mono_string_to_bstr (MonoString *string_obj)
+static gpointer
+mono_string_to_bstr_default (MonoString *string_obj)
 {
 	if (!string_obj)
 		return NULL;
@@ -2642,12 +2643,13 @@ mono_string_to_bstr (MonoString *string_obj)
 		return ret;
 	} else {
 		g_assert_not_reached ();
+                return 0;
 	}
 #endif
 }
 
-MonoString *
-mono_string_from_bstr (gpointer bstr)
+static MonoString *
+mono_string_from_bstr_default (gpointer bstr)
 {
 	if (!bstr)
 		return NULL;
@@ -2667,13 +2669,14 @@ mono_string_from_bstr (gpointer bstr)
 		return str;
 	} else {
 		g_assert_not_reached ();
+                return 0;
 	}
 
 #endif
 }
 
-void
-mono_free_bstr (gpointer bstr)
+static void
+mono_free_bstr_default (gpointer bstr)
 {
 	if (!bstr)
 		return;
@@ -3198,6 +3201,41 @@ static
 void mono_marshal_safearray_free_indices (gpointer indices)
 {
 	g_free (indices);
+}
+
+static MonoStringToBstrFunc mono_string_to_bstr_pfunc = mono_string_to_bstr_default;
+static MonoStringFromBstrFunc mono_string_from_bstr_pfunc = mono_string_from_bstr_default;
+static MonoFreeBstrFunc mono_free_bstr_pfunc = mono_free_bstr_default;
+
+MONO_API void 
+mono_install_bstr_funcs (MonoStringToBstrFunc new_mono_string_to_bstr_pfunc,
+		   	 MonoStringFromBstrFunc new_mono_string_from_bstr_pfunc,
+			 MonoFreeBstrFunc new_mono_free_bstr_pfunc)
+{
+	if (!(new_mono_string_to_bstr_pfunc && new_mono_string_from_bstr_pfunc && new_mono_free_bstr_pfunc))
+		g_assert_not_reached ();
+	
+	mono_string_to_bstr_pfunc = new_mono_string_to_bstr_pfunc;
+	mono_string_from_bstr_pfunc = new_mono_string_from_bstr_pfunc;
+	mono_free_bstr_pfunc = new_mono_free_bstr_pfunc;
+}
+
+gpointer
+mono_string_to_bstr (MonoString *string_obj)
+{
+	return mono_string_to_bstr_pfunc (string_obj);
+}
+
+MonoString *
+mono_string_from_bstr (gpointer bstr)
+{
+	return mono_string_from_bstr_pfunc (bstr);
+}
+
+void
+mono_free_bstr (gpointer bstr)
+{
+	mono_free_bstr_pfunc (bstr);
 }
 
 #else /* DISABLE_COM */
