@@ -16,7 +16,7 @@
 	branch = rx-oss-v2.2
 [submodule "external/ikvm"]
 	path = external/ikvm
-	url = git://github.com/mono/ikvm-fork.git
+	url = git://github.com/dvmarshall/ikvm-fork.git
 [submodule "external/ikdasm"]
 	path = external/ikdasm
 	url = git://github.com/mono/ikdasm.git
