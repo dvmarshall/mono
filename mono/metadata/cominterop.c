@@ -187,6 +187,9 @@ mono_marshal_safearray_set_value (gpointer safearray, gpointer indices, gpointer
 static void
 mono_marshal_safearray_free_indices (gpointer indices);
 
+static MonoString*
+mono_string_from_bstr_versatile(gpointer bstr);
+
 MonoClass*
 mono_class_try_get_com_object_class (void)
 {
@@ -2799,10 +2802,13 @@ mono_string_from_bstr_default (gpointer bstr)
 MonoString *
 mono_string_from_bstr_icall (gpointer bstr)
 {
+/*
 	MonoError error;
 	MonoString *result = mono_string_from_bstr_checked (bstr, &error);
 	mono_error_set_pending_exception (&error);
 	return result;
+*/
+        return mono_string_from_bstr_versatile(bstr);
 }
 
 MonoString *
@@ -3483,19 +3489,25 @@ mono_ptr_to_bstr (gpointer ptr, int slen)
 MonoString *
 mono_string_from_bstr (gpointer bstr)
 {
+/*
 	MonoError error;
 	MonoString *result = mono_string_from_bstr_checked (bstr, &error);
 	mono_error_cleanup (&error);
 	return result;
+*/
+        return mono_string_from_bstr_versatile(bstr);
 }
 
 MonoString *
 mono_string_from_bstr_icall (gpointer bstr)
 {
+/*
 	MonoError error;
 	MonoString *result = mono_string_from_bstr_checked (bstr, &error);
 	mono_error_set_pending_exception (&error);
 	return result;
+*/
+        return mono_string_from_bstr_versatile(bstr);
 }
 
 MonoString *
@@ -3564,10 +3576,13 @@ mono_install_bstr_funcs (MonoStringToBstrFunc new_mono_string_to_bstr_pfunc,
 MonoString *
 ves_icall_System_Runtime_InteropServices_Marshal_PtrToStringBSTR (gpointer ptr)
 {
+/*
 	MonoError error;
 	MonoString *result = mono_string_from_bstr_checked (ptr, &error);
 	mono_error_set_pending_exception (&error);
 	return result;
+*/
+        return mono_string_from_bstr_versatile(ptr);
 }
 
 gpointer
@@ -3586,4 +3601,10 @@ void
 ves_icall_System_Runtime_InteropServices_Marshal_FreeBSTR (gpointer ptr)
 {
 	mono_free_bstr (ptr);
+}
+
+static MonoString*
+mono_string_from_bstr_versatile(gpointer bstr)
+{
+       return mono_string_from_bstr_pfunc(bstr);
 }
