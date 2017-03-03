@@ -104,11 +104,20 @@ namespace System {
       // Determines whether two Boolean objects are equal.
       public override bool Equals (Object obj) {
         //If it's not a boolean, we're definitely not equal
+    /* 
         if (!(obj is Boolean)) {
           return false;
         }
     
         return (m_value==((Boolean)obj).m_value);
+    */
+ 
+        if (obj == null || !(obj is System.Boolean))
+                return false;
+
+         bool value = (bool) obj;
+
+         return m_value ? value : !value;
       }
 
       [System.Runtime.Versioning.NonVersionable]
