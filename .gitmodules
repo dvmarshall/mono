@@ -17,7 +17,7 @@
 [submodule "external/ikvm"]
 	path = external/ikvm
 	url = https://github.com/dvmarshall/ikvm-fork.git
-        branch = ANSYS-mono-4.4.2
+        branch = ANSYS-mono-4.8
 [submodule "external/ikdasm"]
 	path = external/ikdasm
 	url = git://github.com/mono/ikdasm.git
