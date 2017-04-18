@@ -1345,8 +1345,14 @@ mono_w32handle_wait_multiple (gpointer *handles, gsize nhandles, gboolean waital
 		signalled = (waitall && count == nhandles) || (!waitall && count > 0);
 
 		if (signalled) {
-			for (i = 0; i < nhandles; i++)
-				own_if_signalled (handles [i]);
+			if (waitall) {
+				for (i = 0; i < nhandles; i++)
+					own_if_signalled (handles [i]);
+                        }
+                        else 
+                        {
+				own_if_signalled (handles [lowest]);
+			}
 		}
 
 		mono_w32handle_unlock_handles (handles, nhandles);
