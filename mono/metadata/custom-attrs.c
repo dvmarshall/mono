@@ -1470,12 +1470,15 @@ mono_custom_attrs_get_attr_checked (MonoCustomAttrInfo *ainfo, MonoClass *attr_k
 	mono_error_init (error);
 
 	for (i = 0; i < ainfo->num_attrs; ++i) {
-		centry = &ainfo->attrs[i];
-		if (centry->ctor == NULL)
+		MonoCustomAttrEntry *ent = &ainfo->attrs[i];
+		if (ent->ctor == NULL)
 			continue;
-		MonoClass *klass = centry->ctor->klass;
+		MonoClass *klass = ent->ctor->klass;
 		if (attr_klass == klass || mono_class_is_assignable_from (attr_klass, klass))
+		{
+			centry = ent;
 			break;
+		}
 	}
 	if (centry == NULL)
 		return NULL;
