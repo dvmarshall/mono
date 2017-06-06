@@ -37,6 +37,6 @@
 	<dllmap dll="ole32.dll" target="libComponentSystem.so" os="!windows">
 		<dllentry dll="libComponentSystem.so" name="CoCreateInstance" target="AnsCoCreateInstance"/>
 	</dllmap>
-	<dllmap dll="ComponentSystem.180.dll" target="libComponentSystem.so" os="!windows"/>
-	<dllmap dll="ComponentSystem.181.dll" target="libComponentSystem.so" os="!windows"/>
+	<dllmap dll="ComponentSystem.182.dll" target="libComponentSystem.so" os="!windows"/>
+	<dllmap dll="ComponentSystem.190.dll" target="libComponentSystem.so" os="!windows"/>
 </configuration>
