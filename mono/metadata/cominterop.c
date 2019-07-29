@@ -2811,6 +2811,9 @@ init_com_provider_ms (void)
 #endif // WIN32
 #endif // DISABLE_COM
 
+static MonoString*
+mono_string_from_bstr_versatile(gpointer bstr);
+
 mono_bstr
 mono_ptr_to_bstr (const gunichar2* ptr, int slen)
 {
@@ -2896,7 +2899,7 @@ mono_string_from_bstr_default (/*mono_bstr_const*/gpointer bstr)
 MonoString *
 mono_string_from_bstr_icall (mono_bstr_const bstr)
 {
-	return mono_string_from_bstr_common (TRUE, bstr);
+	return mono_string_from_bstr_versatile ((gpointer)bstr);
 }
 
 MONO_API static void 
@@ -3664,7 +3667,8 @@ mono_install_bstr_funcs (MonoStringToBstrFunc new_mono_string_to_bstr_pfunc,
 MonoStringHandle
 ves_icall_System_Runtime_InteropServices_Marshal_PtrToStringBSTR (mono_bstr_const ptr, MonoError *error)
 {
-	return mono_string_from_bstr_checked (ptr, error);
+	//return  mono_string_from_bstr_checked (ptr, error);
+	return  MONO_HANDLE_NEW(MonoString, mono_string_from_bstr_versatile((gpointer)ptr));
 }
 
 mono_bstr
@@ -3742,4 +3746,13 @@ mono_cominterop_get_com_interface_internal (gboolean icall, MonoObjectHandle obj
 #else
 	g_assert_not_reached ();
 #endif
+
 }
+
+
+static MonoString*
+mono_string_from_bstr_versatile(gpointer bstr)
+{
+    return mono_string_from_bstr_pfunc(bstr);
+}
+
