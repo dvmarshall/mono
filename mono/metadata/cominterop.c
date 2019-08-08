@@ -2815,7 +2815,7 @@ static MonoString*
 mono_string_from_bstr_versatile(gpointer bstr);
 
 mono_bstr
-mono_ptr_to_bstr (const gunichar2* ptr, int slen)
+mono_ptr_to_bstr_default (const gunichar2* ptr, int slen)
 {
 	if (!ptr)
 		return NULL;
@@ -3615,6 +3615,23 @@ mono_free_bstr (gpointer bstr)
 	mono_free_bstr_pfunc (bstr);
 }
 
+static MonoPtrToBstrFunc mono_ptr_to_bstr_pfunc = mono_ptr_to_bstr_default;
+
+MONO_API void
+mono_install_ptr_to_bstr_funcs(MonoPtrToBstrFunc ptr_to_bstr_fptr)
+{
+        if (!ptr_to_bstr_fptr)
+                g_assert_not_reached ();
+
+        mono_ptr_to_bstr_pfunc = ptr_to_bstr_fptr;
+}
+
+mono_bstr
+mono_ptr_to_bstr(const gunichar2* ptr, int slen)
+{
+        return mono_ptr_to_bstr_pfunc(ptr, slen);
+}
+
 
 
 #else /* DISABLE_COM */
@@ -3662,6 +3679,12 @@ mono_install_bstr_funcs (MonoStringToBstrFunc new_mono_string_to_bstr_pfunc,
 			 MonoFreeBstrFunc new_mono_free_bstr_pfunc)
 {
 	g_assert_not_reached ();
+}
+
+void
+mono_install_ptr_to_bstr_funcs(MonoPtrToBstrFunc ptr_to_bstr_fptr)
+{
+        g_assert_not_reached ();
 }
 
 #endif /* DISABLE_COM */

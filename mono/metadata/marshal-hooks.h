@@ -30,6 +30,11 @@ mono_install_alloc_cotaskmem_funcs (MonoMarshalAllocCoTaskMemFunc alloc_fprt,
 				    MonoMarshalReAllocCoTaskMemFunc realloc_fptr,
 				    MonoMarshalFreeCoTaskMemFunc free_fptr);
 
+typedef mono_bstr (*MonoPtrToBstrFunc)(const gunichar2* ptr, int slen);
+
+void
+mono_install_ptr_to_bstr_funcs(MonoPtrToBstrFunc ptr_to_bstr_fptr);
+
 G_END_DECLS
 
 #endif
