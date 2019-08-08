@@ -2845,6 +2845,7 @@ mono_ptr_to_bstr (const gunichar2* ptr, int slen)
 	}
 	else {
 		g_assert_not_reached();
+		return 0;
 	}
 #endif
 #endif
@@ -2872,6 +2873,7 @@ mono_string_from_bstr_checked (mono_bstr_const bstr, MonoError *error)
 		return res;
 	} else {
 		g_assert_not_reached ();
+		return NULL_HANDLE_STRING;
 	}
 #endif // DISABLE_COM
 #endif // HOST_WIN32
