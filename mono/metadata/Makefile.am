@@ -308,6 +308,7 @@ common_sources = \
 	marshal.c		\
 	marshal.h		\
 	marshal-internals.h \
+	marshal-hooks.h \
 	mempool.c		\
 	mempool.h		\
 	mempool-internals.h	\

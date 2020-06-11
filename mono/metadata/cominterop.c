@@ -41,6 +41,7 @@
 #include "mono/utils/atomic.h"
 #include "mono/utils/mono-error.h"
 #include "mono/utils/mono-error-internals.h"
+#include "mono/metadata/marshal-hooks.h"
 #include <string.h>
 #include <errno.h>
 #include <mono/utils/w32api.h>
@@ -50,6 +51,9 @@
 #endif
 #include "icall-decl.h"
 #include "icall-signatures.h"
+
+static mono_bstr
+mono_ptr_to_bstr_default (const gunichar2* ptr, int slen);
 
 static void
 mono_System_ComObject_ReleaseInterfaces (MonoComObjectHandle obj);
@@ -95,6 +99,8 @@ Code shared between the DISABLE_COM and !DISABLE_COM
 #define register_icall(func, sig, save) \
 	(mono_register_jit_icall_info (&mono_get_jit_icall_info ()->func, func, #func, (sig), (save), #func))
 
+
+//no need to modify this function to use a hooked function, since mono_ptr_to_bstr is already hooked
 mono_bstr
 mono_string_to_bstr_impl (MonoStringHandle s, MonoError *error)
 {
@@ -105,7 +111,16 @@ mono_string_to_bstr_impl (MonoStringHandle s, MonoError *error)
 	mono_bstr const res = mono_ptr_to_bstr (mono_string_handle_pin_chars (s, &gchandle), mono_string_handle_length (s));
 	mono_gchandle_free_internal (gchandle);
 	return res;
+} 
+
+
+static mono_bstr
+mono_string_to_bstr_default (MonoString* s_raw)
+{
+   g_assert_not_reached ();
+   return NULL;
 }
+
 
 static void*
 mono_cominterop_get_com_interface_internal (gboolean icall, MonoObjectHandle object, MonoClass *ic, MonoError *error);
@@ -2960,9 +2975,12 @@ init_com_provider_ms (void)
 #endif // WIN32
 #endif // DISABLE_COM
 
+static MonoString*
+mono_string_from_bstr_versatile(gpointer bstr);
+
 /* PTR can be NULL */
 mono_bstr
-mono_ptr_to_bstr (const gunichar2* ptr, int slen)
+mono_ptr_to_bstr_default (const gunichar2* ptr, int slen)
 {
 #ifdef HOST_WIN32
 	return SysAllocStringLen (ptr, slen);
@@ -2991,6 +3009,7 @@ mono_ptr_to_bstr (const gunichar2* ptr, int slen)
 	}
 	else {
 		g_assert_not_reached();
+                return 0;
 	}
 #endif
 #endif
@@ -3018,13 +3037,14 @@ mono_string_from_bstr_checked (mono_bstr_const bstr, MonoError *error)
 		return res;
 	} else {
 		g_assert_not_reached ();
+                return NULL_HANDLE_STRING;
 	}
 #endif // DISABLE_COM
 #endif // HOST_WIN32
 }
 
-MonoString *
-mono_string_from_bstr (/*mono_bstr_const*/gpointer bstr)
+static MonoString *
+mono_string_from_bstr_default (/*mono_bstr_const*/gpointer bstr)
 {
 	// FIXME gcmode
 	HANDLE_FUNCTION_ENTER ();
@@ -3037,11 +3057,12 @@ mono_string_from_bstr (/*mono_bstr_const*/gpointer bstr)
 MonoStringHandle
 mono_string_from_bstr_icall_impl (mono_bstr_const bstr, MonoError *error)
 {
-	return mono_string_from_bstr_checked (bstr, error);
+  //  return mono_string_from_bstr_checked (bstr, error);
+    return MONO_HANDLE_NEW(MonoString, mono_string_from_bstr_versatile ((gpointer)bstr));
 }
 
-MONO_API void 
-mono_free_bstr (/*mono_bstr_const*/gpointer bstr)
+MONO_API static void 
+mono_free_bstr_default (/*mono_bstr_const*/gpointer bstr)
 {
 	if (!bstr)
 		return;
@@ -3816,6 +3837,64 @@ void mono_marshal_safearray_free_indices (gpointer indices)
 	g_free (indices);
 }
 
+
+static MonoStringToBstrFunc mono_string_to_bstr_pfunc = mono_string_to_bstr_default;
+static MonoStringFromBstrFunc mono_string_from_bstr_pfunc = mono_string_from_bstr_default;
+static MonoFreeBstrFunc mono_free_bstr_pfunc = mono_free_bstr_default;
+
+MONO_API void 
+mono_install_bstr_funcs (MonoStringToBstrFunc new_mono_string_to_bstr_pfunc,
+		   	 MonoStringFromBstrFunc new_mono_string_from_bstr_pfunc,
+			 MonoFreeBstrFunc new_mono_free_bstr_pfunc)
+{
+	if (!(new_mono_string_to_bstr_pfunc && new_mono_string_from_bstr_pfunc && new_mono_free_bstr_pfunc))
+		g_assert_not_reached ();
+	
+	mono_string_to_bstr_pfunc = new_mono_string_to_bstr_pfunc;
+	mono_string_from_bstr_pfunc = new_mono_string_from_bstr_pfunc;
+	mono_free_bstr_pfunc = new_mono_free_bstr_pfunc;
+}
+
+/*
+mono_bstr
+mono_string_to_bstr (MonoString *string_obj)
+{
+	return mono_string_to_bstr_pfunc (string_obj);
+}
+*/
+
+
+MonoString *
+mono_string_from_bstr (gpointer bstr)
+{
+	return mono_string_from_bstr_pfunc (bstr);
+}
+
+void
+mono_free_bstr (gpointer bstr)
+{
+	mono_free_bstr_pfunc (bstr);
+}
+
+
+static MonoPtrToBstrFunc mono_ptr_to_bstr_pfunc = mono_ptr_to_bstr_default;
+
+MONO_API void
+mono_install_ptr_to_bstr_funcs(MonoPtrToBstrFunc ptr_to_bstr_fptr)
+{
+        if (!ptr_to_bstr_fptr)
+                g_assert_not_reached ();
+
+        mono_ptr_to_bstr_pfunc = ptr_to_bstr_fptr;
+}
+
+mono_bstr
+mono_ptr_to_bstr(const gunichar2* ptr, int slen)
+{
+        return mono_ptr_to_bstr_pfunc(ptr, slen);
+}
+
+
 #else /* DISABLE_COM */
 
 void
@@ -3855,6 +3934,21 @@ ves_icall_System_Runtime_InteropServices_Marshal_QueryInterfaceInternal (MonoIUn
 	return mono_IUnknown_QueryInterface (pUnk, riid, ppv);
 }
 
+void 
+mono_install_bstr_funcs (MonoStringToBstrFunc new_mono_string_to_bstr_pfunc,
+		   	 MonoStringFromBstrFunc new_mono_string_from_bstr_pfunc,
+			 MonoFreeBstrFunc new_mono_free_bstr_pfunc)
+{
+	g_assert_not_reached ();
+}
+
+
+void
+mono_install_ptr_to_bstr_funcs(MonoPtrToBstrFunc ptr_to_bstr_fptr)
+{
+        g_assert_not_reached ();
+}
+
 #else /* HOST_WIN32 */
 
 int
@@ -3889,7 +3983,8 @@ ves_icall_System_Runtime_InteropServices_Marshal_PtrToStringBSTR (mono_bstr_cons
 		mono_error_set_argument_null (error, "ptr", NULL);
 		return NULL_HANDLE_STRING;
 	}
-	return mono_string_from_bstr_checked (ptr, error);
+    //	return mono_string_from_bstr_checked (ptr, error);
+        return MONO_HANDLE_NEW(MonoString, mono_string_from_bstr_versatile((gpointer)ptr));
 }
 
 mono_bstr
@@ -3998,3 +4093,10 @@ mono_cominterop_is_interface (MonoClass* klass)
 	g_assert_not_reached ();
 #endif
 }
+
+static MonoString*
+mono_string_from_bstr_versatile(gpointer bstr)
+{
+    return mono_string_from_bstr_pfunc(bstr);
+}
+
