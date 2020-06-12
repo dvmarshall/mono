@@ -7374,7 +7374,7 @@ namespace Mono.CSharp
 				return null;
 			}
 
-			IsSpecialMethodInvocation (ec, method, loc);
+	//AnsysPatch    IsSpecialMethodInvocation (ec, method, loc);
 			
 			eclass = ExprClass.Value;
 
