@@ -9263,7 +9263,7 @@ mono_lookup_internal_call_full (MonoMethod *method, gboolean warn_on_missing, mo
 		*foreign = FALSE;
 
 	guint32 flags = MONO_ICALL_FLAGS_NONE;
-	gconstpointer addr = mono_lookup_internal_call_full_with_flags (method, warn_on_missing, &flags);
+	gconstpointer addr = mono_lookup_internal_call_full_with_flags (method, FALSE, &flags);
 
 	if (uses_handles && (flags & MONO_ICALL_FLAGS_USES_HANDLES))
 		*uses_handles = TRUE;
